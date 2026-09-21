@@ -77,40 +77,56 @@ struct simplefs_inode *simplefs_inode_search(struct super_block *sb,
     return NULL;
 }
 
-void simplefs_inode_add(struct super_block *vsb, struct simplefs_inode *inode)
+/*
+* 函数说明:将新增的inode添加到inode子区域中
+* 输入参数:struct super_block *p_sb
+		   struct simplefs_inode *p_sinode
+* 输出参数:无
+* 返回值 	:无
+* 修改说明: 
+	时间:2026/09/22
+	作者:houchao
+	说明:函数优化,增加注释信息
+*/
+void simplefs_inode_add(struct super_block *p_sb, struct simplefs_inode *p_sinode)
 {
-    struct simplefs_super_block *sb = SIMPLEFS_SB(vsb);
-    struct buffer_head *bh;
-    struct simplefs_inode *inode_iterator;
+	struct simplefs_super_block *p_ssb  = SIMPLEFS_SB(p_sb);
+	struct buffer_head *p_bh		    = NULL;
+	struct simplefs_inode *p_tmp_sinode = NULL;
 
-    if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return;
-    }
+	if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock))
+	{
+		sfs_trace("failed to acquire mutex lock\n");
+		goto l_out;
+	}
 
-    bh = sb_bread(vsb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
-    BUG_ON(!bh);
+	p_bh = sb_bread(p_sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+	BUG_ON(!p_bh);
 
-    inode_iterator = (struct simplefs_inode *)bh->b_data;
+	p_tmp_sinode = (struct simplefs_inode *)p_bh->b_data;
 
-    if (mutex_lock_interruptible(&simplefs_sb_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	goto out_mgmt;
-    }
+	if (mutex_lock_interruptible(&simplefs_sb_lock))
+	{
+		sfs_trace("failed to acquire simplefs sb lock\n");
+		goto l_fail;
+	}
 
-    /* Append the new inode in the end in the inode store */
-    inode_iterator += sb->inodes_count;
+	/* Append the new inode in the end in the inode store */
+	p_tmp_sinode += p_ssb->inodes_count;
+	//memcpy(p_tmp_sinode, p_sinode, sizeof(struct simplefs_inode));
+	p_ssb->inodes_count++;
 
-    memcpy(inode_iterator, inode, sizeof(struct simplefs_inode));
-    sb->inodes_count++;
+	mark_buffer_dirty(p_bh);
+	simplefs_sb_sync(p_sb);
+	brelse(p_bh);
 
-    mark_buffer_dirty(bh);
-    simplefs_sb_sync(vsb);
-    brelse(bh);
+	mutex_unlock(&simplefs_sb_lock);
 
-    mutex_unlock(&simplefs_sb_lock);
-out_mgmt:
-    mutex_unlock(&simplefs_inodes_mgmt_lock);
+l_out:
+	return;
+
+l_fail:
+	mutex_unlock(&simplefs_inodes_mgmt_lock);
 }
 
 static int simplefs_read_link(struct dentry *dentry, char __user *buffer, int buflen)
@@ -207,51 +223,61 @@ out_mgmt:
  *
  * If for some reason, the file creation/deletion failed, the block number
  * will still be marked as non-free. You need fsck to fix this.*/
-int simplefs_sb_get_a_freeblock(struct super_block *vsb, uint64_t * out)
+/*
+* 函数说明:给inode分配数据块
+* 输入参数:struct super_block *p_sb
+* 输出参数:uint64_t *p_block_number,表示数据块序号
+* 返回值   :0表示执行成功;<0表示执行失败
+* 修改说明: 
+    时间:2026/09/22
+    作者:houchao
+    说明:函数优化,增加注释信息
+         该文件系统一共能用64个数据块,同时,0,1,2这三个数据块不能给普通用户使用
+*/
+int simplefs_sb_get_a_freeblock(struct super_block *p_sb, uint64_t *p_block_number)
 {
-    struct simplefs_super_block *sb = SIMPLEFS_SB(vsb);
-    int i;
-    int ret = 0;
+    struct simplefs_super_block *p_simple_sb = NULL;
+    int i                                    = 0;
+    int ret                                  = 0;
 
     if (mutex_lock_interruptible(&simplefs_sb_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
+    	sfs_trace("failed to acquire mutex lock\n");
     	ret = -EINTR;
-    	goto end;
+    	goto l_end;
     }
 
-    printk("%s %d sb->free_blocks[%d] start\n", __FUNCTION__, __LINE__, (int)sb->free_blocks);
+    p_simple_sb = SIMPLEFS_SB(p_sb);
+    printk("%s %d sb->free_blocks[%d] start\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks);
 
     /* Loop until we find a free block. We start the loop from 3,
      * as all prior blocks will always be in use */
-    for (i = 3; i < SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED; i++) {
-    	printk("simplefs_sb_get_a_freeblock circle i[%d]\n", i);
-    	if (sb->free_blocks & (1UL << i)) {
-    		break;
-    	}
-    }
-
-    if(sb->free_blocks & ~(1UL << 55))
+    for (i = 3; i < SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED; i++)
     {
-    	printk("simplefs_sb_get_a_freeblock i=55, and sb->free_blocks is 0 \n");
-    }
-    
-    printk("simplefs_sb_get_a_freeblock i[%d]\n", i);
-    if (unlikely(i == SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED)) {
-    	printk(KERN_ERR "No more free blocks available");
-    	ret = -ENOSPC;
-    	goto end;
+        printk("simplefs_sb_get_a_freeblock circle i[%d]\n", i);
+        if (p_simple_sb->free_blocks & (1UL << i))
+        {
+            break;
+        }
     }
 
-    *out = i;
-    printk("simplefs_sb_get_a_freeblock i[%d],out[%d]\n", i,(int)*out);
+    printk("simplefs_sb_get_a_freeblock i[%d]\n", i);
+    if (unlikely(i == SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED))
+    {
+        printk(KERN_ERR "no more free blocks available");
+        ret = -ENOSPC;
+        goto l_end;
+    }
+
+    *p_block_number = i;
+    printk("simplefs_sb_get_a_freeblock i[%d],out[%d]\n", i,(int)*p_block_number);
 
     /* Remove the identified block from the free list */
-    sb->free_blocks &= ~(1UL << i);
-    printk("%s %d sb->free_blocks[%d] end\n", __FUNCTION__, __LINE__, (int)sb->free_blocks);
+    p_simple_sb->free_blocks &= ~(1UL << i);
+    printk("%s %d sb->free_blocks[%d] end\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks);
 
-    simplefs_sb_sync(vsb);
+    simplefs_sb_sync(p_sb);
 
-end:
+l_end:
     mutex_unlock(&simplefs_sb_lock);
     return ret;
 }
@@ -280,21 +306,35 @@ end:
     return ret;
 }
 
-static int simplefs_sb_get_objects_count(struct super_block *vsb,
-    				 uint64_t * out)
+/*
+* 函数说明:读取文件系统创建的对象数count
+* 输入参数:struct super_block *p_sb
+* 输出参数:uint64_t *p_count
+* 返回值	  :0表示执行成功;<0表示执行失败
+* 修改说明: 
+      时间:2026/09/22
+      作者:houchao
+      说明:函数优化,增加注释信息
+*/
+static int simplefs_sb_get_objects_count(struct super_block *p_sb, uint64_t *p_count)
 {
-    struct simplefs_super_block *sb = SIMPLEFS_SB(vsb);
+    int ret                         = 0;
+    struct simplefs_super_block *sb = SIMPLEFS_SB(p_sb);
 
-    if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return -EINTR;
+    if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock))
+    {
+        sfs_trace("failed to acquire mutex lock\n");
+        ret = -EINTR;
+        goto l_out;
     }
-    *out = sb->inodes_count;
+
+    *p_count = sb->inodes_count;
     mutex_unlock(&simplefs_inodes_mgmt_lock);
 
     printk("%s %d sb->inodes_count[%llu]\n", __FUNCTION__, __LINE__, sb->inodes_count);
 
-    return 0;
+l_out:
+    return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0)
@@ -853,7 +893,6 @@ static int simplefs_dir_add_entry_info(struct inode *dir, struct simplefs_inode 
     brelse(bh);
     
     if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock)) {
-    	mutex_unlock(&simplefs_directory_children_update_lock);
     	sfs_trace("Failed to acquire mutex lock\n");
     	return -EINTR;
     }
@@ -861,7 +900,6 @@ static int simplefs_dir_add_entry_info(struct inode *dir, struct simplefs_inode 
     parent_dir_inode->dir_children_count++;
     ret = simplefs_inode_save(sb, parent_dir_inode);	
     mutex_unlock(&simplefs_inodes_mgmt_lock);
-    mutex_unlock(&simplefs_directory_children_update_lock);
     return ret;
 }
 
@@ -968,72 +1006,106 @@ out_mgmt:
     
 }
 
-static int simplefs_create_fs_object(struct inode *dir, struct dentry *dentry,
+/*
+* 函数说明:文件系统创建或打开一个文件时inode层面的具体创建操作
+* 输入参数:struct inode *p_dir
+           struct dentry *p_dentry
+           umode_t mode
+* 输出参数:无
+* 返回值	  :0表示执行成功;<0表示执行失败
+* 修改说明: 
+      时间:2026/09/21
+      作者:houchao
+      说明:函数优化,增加注释信息
+*/
+static int simplefs_create_fs_object(struct inode *p_dir, struct dentry *p_dentry,
     			     umode_t mode)
 {
-    struct inode *inode;
-    struct simplefs_inode *sfs_inode;
-    struct super_block *sb;
-    uint64_t count;
-    int ret;
+    struct inode *p_inode              = NULL;
+    struct simplefs_inode *p_sfs_inode = NULL;
+    struct super_block *p_sb           = NULL;
+    uint64_t count                     = 0;
+    int ret                            = 0;
 
     __PRINT_FUNC_INFO();
-    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return -EINTR;
-    }
-    sb = dir->i_sb;
 
-    ret = simplefs_sb_get_objects_count(sb, &count);
-    if (ret < 0) {
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return ret;
+    // 0.加锁,目录子节点锁
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    {
+        sfs_trace("failed to acquire mutex lock\n");
+        ret = -EINTR;
+	    goto l_fail;
     }
 
-    if (unlikely(count >= SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED)) {
+    p_sb = p_dir->i_sb;
+    // 1.获取文件系统支持的创建对象的个数
+    ret = simplefs_sb_get_objects_count(p_sb, &count);
+    if (unlikely(ret < 0))
+    {
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_fail;
+    }
+
+    // 2.判断创建的对象数是否超过定义的上限64
+    if (unlikely(count >= SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED))
+    {
     	/* The above condition can be just == insted of the >= */
-    	printk(KERN_ERR
-    	       "Maximum number of objects supported by simplefs is already reached");
+    	printk(KERN_ERR "maximum number of objects supported by simplefs is already reached");
     	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -ENOSPC;
+        ret = -ENOSPC;
+        goto l_fail;
     }
 
-    if (!S_ISDIR(mode) && !S_ISREG(mode)) {
-    	printk(KERN_ERR
-    	       "Creation request but for neither a file nor a directory");
+    // 3.判断mode模式是否合法, 只支持创建目录或文件
+    if (!S_ISDIR(mode) && !S_ISREG(mode))
+    {
+    	printk(KERN_ERR "creation request but for neither a file nor a directory");
     	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -EINVAL;
+        ret = -EINVAL;
+        goto l_fail;
     }
 
-    /*new一个新的inode，申请内存空间*/
-    inode = new_inode(sb);
-    if (!inode) {
+    // 4. 分配一个新的vfs层的inode
+    p_inode = new_inode(p_sb);
+    if (unlikely(NULL == p_inode))
+    {
     	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -ENOMEM;
+        ret = -ENOMEM;
+        goto l_fail;
     }
-
-    inode->i_sb = sb;
-    inode->i_op = &simplefs_inode_ops;
-    inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
-    inode->i_ino = (count + SIMPLEFS_START_INO - SIMPLEFS_RESERVED_INODES + 1);
+    p_inode->i_sb = p_sb;
+    p_inode->i_op = &simplefs_inode_ops;  // 目录或普通文件inode操作集
+    p_inode->i_atime = p_inode->i_mtime = p_inode->i_ctime = CURRENT_TIME;
+    p_inode->i_ino = (count + SIMPLEFS_START_INO - SIMPLEFS_RESERVED_INODES + 1);
     
-    /*new一个新的sfs_inode，申请内存空间*/
-    sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
-    sfs_inode->inode_no = inode->i_ino;
-    inode->i_private = sfs_inode;
-    sfs_inode->mode = mode;
+    // 5.分配一个新的simplefs文件系统的私有sfs_inode
+    p_sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
+    if (unlikely(NULL == p_sfs_inode))
+    {
+    	mutex_unlock(&simplefs_directory_children_update_lock);
+        ret = -ENOMEM;
+        goto l_fail;
+    }
+    p_sfs_inode->inode_no = p_inode->i_ino;
+    p_inode->i_private = p_sfs_inode;  // vfs和simplefs的内存inode通过i_private绑定
+    p_sfs_inode->mode = mode;
 
-    if (S_ISDIR(mode)) {
-    	printk(KERN_INFO "New directory creation request\n");
-    	sfs_inode->dir_children_count = 0;
-    	inode->i_fop = &simplefs_dir_operations;
-    } else if (S_ISREG(mode)) {
-    	printk(KERN_INFO "New file creation request\n");
-    	sfs_inode->file_size = 0;
-    	inode->i_fop = &simplefs_file_operations;
-    	inode->i_mapping->a_ops = &simplefs_aops;	//用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
+    // 6.针对目录文件填充file操作指针
+    if (S_ISDIR(mode))
+    {
+    	printk(KERN_INFO "new directory creation request\n");
+    	p_sfs_inode->dir_children_count = 0;  // 针对目录文件,子条目数为0
+    	p_inode->i_fop = &simplefs_dir_operations;
+    }
+    else if (S_ISREG(mode)) // 7.针对普通文件填充file操作指针
+    {
+    	printk(KERN_INFO "new file creation request\n");
+    	p_sfs_inode->file_size = 0;  // 针对普通文件, 文件大小为0
+    	p_inode->i_fop = &simplefs_file_operations;
+    	p_inode->i_mapping->a_ops = &simplefs_aops;	//用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
     }
 
+    // 8.分配一个空闲的数据块
     /* First get a free block and update the free map,
      * Then add inode to the inode store and update the sb inodes_count,
      * Then update the parent directory's inode with the new child.
@@ -1041,27 +1113,38 @@ static int simplefs_create_fs_object(struct inode *dir, struct dentry *dentry,
      * The above ordering helps us to maintain fs consistency
      * even in most crashes
      */
-    ret = simplefs_sb_get_a_freeblock(sb, &sfs_inode->data_block_number);
-    if (ret < 0) {
-    	printk(KERN_ERR "simplefs could not get a freeblock");
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return ret;
+    ret = simplefs_sb_get_a_freeblock(p_sb, &p_sfs_inode->data_block_number);
+    if (unlikely(ret < 0))
+    {
+        printk(KERN_ERR "simplefs could not get a freeblock");
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_fail;
     }
 
-    /*把sfs_inode添加到sb中*/
-    simplefs_inode_add(sb, sfs_inode);
+    // 9.把sfs_inode添加到sb中
+    simplefs_inode_add(p_sb, p_sfs_inode);
 
-    /*在父dir中添加一个条目信息*/
-    ret = simplefs_dir_add_entry_info(dir,sfs_inode,dentry->d_name.name);
-    if(ret) {
-    	pr_info("simplefs dir add inode failed!\n");
-    	return ret;
+    // 10. 在父目录中添加一条条目信息
+    ret = simplefs_dir_add_entry_info(p_dir,p_sfs_inode,p_dentry->d_name.name);
+    if(unlikely(ret))
+    {
+        pr_info("simplefs dir add inode failed!\n");
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_fail;
     }
-    
-    inode_init_owner(inode, dir, mode);
-    d_add(dentry, inode);
+    mutex_unlock(&simplefs_directory_children_update_lock);
+
+    // 11.设置属主
+    inode_init_owner(p_inode, p_dir, mode);
+
+    // 12.将inode和dentry绑定起来
+    d_add(p_dentry, p_inode);
 
     return 0;
+
+l_fail:
+    return ret;
+
 }
 
 static int simplefs_delete_fs_object(struct inode *dir, struct dentry *dentry)

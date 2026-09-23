@@ -33,6 +33,9 @@
 #define sfs_debug(level, fmt, ...) no_printk(fmt, ##__VA_ARGS__)
 #endif
 
+#define SIMPLEFS_MAX_BLOCKS  1048576     // 假设最大 4GB (4GB / 4KB = 1048576)
+#define SIMPLEFS_MAX_INODES  64
+
 /* Hard-coded inode number for the root directory */
 const int SIMPLEFS_ROOTDIR_INODE_NUMBER = 1;
 

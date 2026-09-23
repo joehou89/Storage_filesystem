@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/statfs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
 #include <linux/random.h>
@@ -1634,8 +1635,92 @@ void simplefs_destory_inode(struct inode *inode)
     kmem_cache_free(sfs_inode_cachep, sfs_inode);
 }
 
+/*
+* 函数说明:文件系统sb支持stat语义操作
+* 输入参数:struct inode *p_parent_inode
+*          struct simplefs_inode *p_sfs_inode
+*          const char *filename
+* 输出参数:无
+* 返回值 	:0表示执行成功;<0表示执行失败
+* 修改说明: 
+*    时间:2026/09/23
+*    作者:houchao
+*    说明:函数优化,增加注释信息
+*/
+static int simplefs_statfs(struct dentry *p_dentry, struct kstatfs *p_buf)
+{
+    struct inode *p_inode                 = p_dentry->d_inode;
+    struct super_block *p_sb              = p_inode->i_sb;
+    struct simplefs_super_block *p_sfs_sb = SIMPLEFS_SB(p_sb);
+	uint64_t total_bytes                  = 0;
+    uint64_t total_blocks                 = 0;
+    int ret                               = 0;
+    uint64_t count                        = 0;
+
+    // 1.获取底层块设备的总字节数
+    if (likely(p_sb->s_bdev))
+    {
+        // 对于 CentOS 7 (3.10 内核)，使用 i_size_read
+        total_bytes = i_size_read(p_sb->s_bdev->bd_inode);
+        // 注：如果是 5.10 以上的新内核，推荐用 total_bytes = bdev_nr_bytes(sb->s_bdev);
+    }
+    else
+    {
+        // 如果是纯内存文件系统，则没有 s_bdev
+        total_bytes = SIMPLEFS_MAX_BLOCKS; // 默认值(固定值)
+    }
+
+    // 2.加锁,目录子节点锁
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    {
+        sfs_trace("failed to acquire mutex lock\n");
+        ret = -EINTR;
+	    goto l_out;
+    }
+
+    // 3.获取当前已使用的块数量
+    ret = simplefs_sb_get_objects_count(p_sb, &count);
+    if (unlikely(ret < 0))
+    {
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_out;
+    }
+    mutex_unlock(&simplefs_directory_children_update_lock);
+
+    // 4.设置文件系统魔数
+    p_buf->f_type = SIMPLEFS_MAGIC;
+
+    // 5.设置块大小
+    p_buf->f_bsize  = p_sb->s_blocksize; 
+    p_buf->f_frsize = p_sb->s_blocksize;
+    
+    // 6.设置总块数和空闲块数 (df 根据这几个值算容量)
+    total_blocks = total_bytes >> p_sb->s_blocksize_bits;
+    p_buf->f_blocks = total_blocks;
+    p_buf->f_bfree  = (count > total_blocks) ? 0 : total_blocks - count;
+    p_buf->f_bavail = (count > total_blocks) ? 0 : total_blocks - count;
+
+    // 7.设置 inode 相关信息 (df -i 会用到)
+    p_buf->f_files  = SIMPLEFS_MAX_INODES;
+    p_buf->f_ffree  = SIMPLEFS_MAX_INODES - p_sfs_sb->inodes_count;
+
+    // 8.设置文件名最大长度
+    p_buf->f_namelen = 255;
+
+    // 9.其他可选设置
+    p_buf->f_fsid.val[0] = 0; // 文件系统 ID，一般填 0
+    p_buf->f_fsid.val[1] = 0;
+
+l_out:
+    return ret; // 必须返回 0 表示成功
+}
+
+/*
+* 结构体说明: 文件系统sb元数据操作函数集合
+*/
 static const struct super_operations simplefs_sops = {
     .destroy_inode = simplefs_destory_inode,
+    .statfs = simplefs_statfs,
 };
 
 /* This function, as the name implies, Makes the super_block valid and

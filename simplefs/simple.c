@@ -1177,6 +1177,7 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     if (unlikely(ret < 0))
     {
         printk(KERN_ERR "simplefs could not get a freeblock");
+        iput(p_inode);
         goto l_unlock;
     }
 
@@ -1188,6 +1189,7 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     if(unlikely(ret))
     {
         pr_info("simplefs dir add inode failed!\n");
+        iput(p_inode);
         goto l_unlock;
     }
     mutex_unlock(&simplefs_directory_children_update_lock);

@@ -917,73 +917,93 @@ static int simplefs_dir_add_entry_info(struct inode *p_parent_inode, struct simp
     }
 
     p_sinode->dir_children_count++;
-    ret = simplefs_inode_save(p_sb, p_sinode);	
+    ret = simplefs_inode_save(p_sb, p_sinode);
     mutex_unlock(&simplefs_inodes_mgmt_lock);
 
 l_out:
     return ret;
 }
 
-static int simplefs_dir_del_entry_info(struct inode *dir, struct simplefs_inode *sfs_inode, const char *filename)
+/*
+* 函数说明:文件系统删除inode时对条目删除操作
+* 输入参数:struct inode *p_parent_inode, 上层inode指针
+		   struct simplefs_inode *p_sinode
+		   const char *p_filename
+* 输出参数:无
+* 返回值   :0表示执行成功;<0表示执行失败
+* 修改说明: 
+	  时间:2026/09/22
+	  作者:houchao
+	  说明:函数优化,增加注释信息
+*/
+static int simplefs_dir_del_entry_info(struct inode *p_parent_inode, struct simplefs_inode *p_sinode,
+    const char *p_filename)
 {
-    //得先获取对应的sb
-    struct super_block *sb = dir->i_sb;
-
-    //获取对应父目录dir的inode
-    struct simplefs_inode *parent_dir_inode = SIMPLEFS_INODE(dir);
-    uint64_t dir_children_count;
-    struct buffer_head *bh;
-    struct simplefs_dir_record *first,*last;
-    int ret,i;
+    // 先获取对应的sb
+    struct super_block *p_sb = p_parent_inode->i_sb;
+    // 获取对应父目录dir的inode
+    struct simplefs_inode *p_parent_sinode = SIMPLEFS_INODE(p_parent_inode);
+    struct simplefs_dir_record *p_first    = NULL;
+	struct simplefs_dir_record *p_last     = NULL;
+    uint64_t dir_children_count            = 0;
+    struct buffer_head *p_bh               = NULL;
+    int ret                                = 0;
+    int i                                  = 0;
 
     __PRINT_FUNC_INFO();
-    
-    //获取父目录对应inode的子条目个数
-    dir_children_count = parent_dir_inode->dir_children_count;
 
-    //通过sb_bread获取bh
-    bh = sb_bread(sb, parent_dir_inode->data_block_number);
-    BUG_ON(!bh);
+    // 通过sb_bread获取bh
+    p_bh = sb_bread(p_sb, p_parent_sinode->data_block_number);
+    BUG_ON(!p_bh);
     
-    //获取第一个record记录条目信息
-    first = (struct simplefs_dir_record *)bh->b_data;
-    //pr_info("first111 ino:%llu, firstname:%s",first->inode_no,first->filename);
+    // 获取第一个record记录条目信息
+    p_first = (struct simplefs_dir_record *)p_bh->b_data;
 
-    //通过子条目个数        inode_no，便利record记录信息
-    for(i=0; i<dir_children_count; first++,i++) 
+    // 获取父目录对应inode的子条目个数
+    dir_children_count = p_parent_sinode->dir_children_count;
+
+    // 通过子条目个数        inode_no，便利record记录信息
+    for (i = 0; i < dir_children_count; p_first++, i++)
     {
-    	if((first->inode_no == sfs_inode->inode_no) && (0 == strcmp(first->filename,filename)))    //解决删除硬链接文件要多删除一次问题 20190906
-    	{
-    		break;
-    	}
+        // 解决删除硬链接文件要多删除一次问题 20190906
+    	if ((p_first->inode_no == p_sinode->inode_no) && (0 == strcmp(p_first->filename, p_filename)))
+        {
+            break;
+        }
     }
 
-    if(i == dir_children_count) {
-    	return -ENOENT; 
+    if(i == dir_children_count)
+    {
+        ret = -ENOENT;
+        goto l_out;
     }
     
-    //通过一个last指针操作记录信息
-    last = (struct simplefs_dir_record *)bh->b_data;
-    last += dir_children_count - 1;
-    memcpy(first,last,sizeof(struct simplefs_dir_record));
-    //pr_info("first222 ino:%llu, firstname:%s",first->inode_no,first->filename);
-    
-    mark_buffer_dirty(bh);
-    sync_dirty_buffer(bh);
-    brelse(bh);
+    // 通过一个last指针操作记录信息,每次都是用最后一个simplefs inode的dir record信息拷贝到要删除的那个
+    // 这种写法是否存在内存泄漏? 是在目录文件inode block的区域上新增内容,理论上不会存在泄露情况
+    p_last = (struct simplefs_dir_record *)p_bh->b_data;
+    p_last += dir_children_count - 1;
+    memcpy(p_first,p_last,sizeof(struct simplefs_dir_record));
+
+    // 持久化
+    mark_buffer_dirty(p_bh);
+    sync_dirty_buffer(p_bh);
+    brelse(p_bh);
     
     if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock)) {
     	sfs_trace("Failed to acquire mutex lock\n");
-    	return -EINTR;
+        ret = -EINTR;
+    	goto l_out;
     }
 
-    //父目录条目个数减1
-    parent_dir_inode->dir_children_count--;
+    // 父目录条目个数减1
+    p_parent_sinode->dir_children_count--;
 
-    //保存bh信息
-    ret = simplefs_inode_save(sb, parent_dir_inode);
+    // 保存bh信息
+    ret = simplefs_inode_save(p_sb, p_parent_sinode);
     
     mutex_unlock(&simplefs_inodes_mgmt_lock);
+
+l_out:
     return ret;
 }
 
@@ -1025,6 +1045,41 @@ out_bh:
 out_mgmt:
     mutex_unlock(&simplefs_inodes_mgmt_lock);
     
+}
+
+/*
+* 函数说明: 针对新创建的inode赋值"文件"操作ops指针
+* 输入参数:struct inode *p_inode
+           struct simplefs_inode *p_sfs_inode
+           umode_t mode
+* 输出参数:无
+* 返回值	  :无
+* 修改说明: 
+      时间:2026/09/22
+      作者:houchao
+      说明:函数拆封
+*/
+static void simplefs_file_ops(struct inode *p_inode, struct simplefs_inode *p_sfs_inode, umode_t mode)
+{
+    // 1.入参检查
+    BUG_ON(NULL == p_inode || NULL == p_sfs_inode);
+
+    // 2.通过mode执行判断处理
+    if (S_ISDIR(mode))  // 针对目录文件填充file操作指针
+    {
+    	printk(KERN_INFO "new directory creation request\n");
+    	p_sfs_inode->dir_children_count = 0;  // 针对目录文件,子条目数为0
+    	p_inode->i_fop = &simplefs_dir_operations;
+    }
+    else if (S_ISREG(mode)) // 针对普通文件填充file操作指针
+    {
+    	printk(KERN_INFO "new file creation request\n");
+    	p_sfs_inode->file_size = 0;  // 针对普通文件, 文件大小为0
+    	p_inode->i_fop = &simplefs_file_operations;
+    	p_inode->i_mapping->a_ops = &simplefs_aops;	//用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
+    }
+
+    return;
 }
 
 /*
@@ -1107,22 +1162,10 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     p_inode->i_private = p_sfs_inode;  // vfs和simplefs的内存inode通过i_private绑定
     p_sfs_inode->mode = mode;
 
-    // 6.针对目录文件填充file操作指针
-    if (S_ISDIR(mode))
-    {
-    	printk(KERN_INFO "new directory creation request\n");
-    	p_sfs_inode->dir_children_count = 0;  // 针对目录文件,子条目数为0
-    	p_inode->i_fop = &simplefs_dir_operations;
-    }
-    else if (S_ISREG(mode)) // 7.针对普通文件填充file操作指针
-    {
-    	printk(KERN_INFO "new file creation request\n");
-    	p_sfs_inode->file_size = 0;  // 针对普通文件, 文件大小为0
-    	p_inode->i_fop = &simplefs_file_operations;
-    	p_inode->i_mapping->a_ops = &simplefs_aops;	//用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
-    }
+    // 6.填充file文件操作指针ops
+    simplefs_file_ops(p_inode, p_sfs_inode, mode);
 
-    // 8.分配一个空闲的数据块
+    // 7.分配一个空闲的数据块
     /* First get a free block and update the free map,
      * Then add inode to the inode store and update the sb inodes_count,
      * Then update the parent directory's inode with the new child.
@@ -1137,10 +1180,10 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
         goto l_unlock;
     }
 
-    // 9.把sfs_inode添加到sb中
+    // 8.把sfs_inode添加到sb中
     simplefs_inode_add(p_sb, p_sfs_inode);
 
-    // 10. 在父目录中添加一条条目信息
+    // 9. 在父目录中添加一条条目信息
     ret = simplefs_dir_add_entry_info(p_parent_inode, p_sfs_inode, p_dentry->d_name.name);
     if(unlikely(ret))
     {
@@ -1149,10 +1192,10 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     }
     mutex_unlock(&simplefs_directory_children_update_lock);
 
-    // 11.设置属主
+    // 10.设置属主
     inode_init_owner(p_inode, p_parent_inode, mode);
 
-    // 12.将inode和dentry绑定起来
+    // 11.将inode和dentry绑定起来
     d_add(p_dentry, p_inode);
 
 l_out:
@@ -1164,73 +1207,96 @@ l_unlock:
 
 }
 
-static int simplefs_delete_fs_object(struct inode *dir, struct dentry *dentry)
+/*
+* 函数说明:文件系统删除inode层面的具体创建操作
+* 输入参数:struct inode *p_parent_inode, 上层inode指针
+           struct dentry *p_dentry, 目录结构体指针
+* 输出参数:无
+* 返回值	  :0表示执行成功;<0表示执行失败
+* 修改说明: 
+      时间:2026/09/22
+      作者:houchao
+      说明:函数优化,增加注释信息
+*/
+static int simplefs_delete_fs_object(struct inode *p_parent_inode, struct dentry *p_dentry)
 {
-    struct inode *inode = d_inode(dentry);
-    struct simplefs_inode *parent_dir_inode, *sfs_inode;
-    struct super_block *sb; 
-    //uint64_t block_number;
-    int ret;
+    struct inode *p_inode = d_inode(p_dentry);
+    struct simplefs_inode *p_parent_sinode = NULL;
+	struct simplefs_inode *p_sinode        = NULL;
+    struct super_block *p_sb               = NULL;
+    int ret                                = 0;
 
     __PRINT_FUNC_INFO();
 
-    sb = dir->i_sb;	
-    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return -EINTR;
+    // 1.获取目录子条目锁
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    {
+        sfs_trace("failed to acquire dir child lock\n");
+        ret = -EINTR;
+        goto l_out;
     }
 
-    //获取父目录对应的inode
-    parent_dir_inode = SIMPLEFS_INODE(dir);
-    if(NULL == parent_dir_inode) {
-    	ret = -EINTR;
-    	goto out;
+    // 2.获取父目录对应的simplefs inode
+    p_parent_sinode = SIMPLEFS_INODE(p_parent_inode);
+    if(unlikely(NULL == p_parent_sinode))
+    {
+        ret = -EINTR;
+        goto l_fail;
     }
 
-    //对父目录inode里的子条目个数进行判断
-    if(0 == parent_dir_inode->inode_no) {
-    	ret = -EINTR;
-    	goto out;
+    // 3.对父目录inode里的inode序号进行判断
+    if(0 == p_parent_sinode->inode_no)
+    {
+        ret = -EINTR;
+        goto l_fail;
     }
 
-    //获取dentry对应inode的sfs_inode
-    sfs_inode = SIMPLEFS_INODE(inode);
-    if(NULL == sfs_inode) {
-    	ret = -EINTR;
-    	goto out;
+    // 4.获取dentry对应inode的sfs_inode
+    p_sinode = SIMPLEFS_INODE(p_inode);
+    if(unlikely(NULL == p_sinode))
+    {
+        ret = -EINTR;
+        goto l_fail;
     }
 
-    //对sfs_inode mode如果是目录 则执行返错
-    if(S_ISDIR(sfs_inode->mode) && (sfs_inode->dir_children_count != 0)) {
-    	pr_info("dentry[%s] is dir\n",dentry->d_name.name);
-    	ret = -ENOTEMPTY;
-    	goto out;
+    // 5.对sinode mode进行判断处理,如果是目录文件,且child count非0,说明此时还存在其他文件,不允许删除
+    if(S_ISDIR(p_sinode->mode) && (p_sinode->dir_children_count != 0))
+    {
+        pr_info("dentry[%s] is dir, exist files or dirs\n",p_dentry->d_name.name);
+        ret = -ENOTEMPTY;
+        goto l_fail;
     }
 
-    /*删除父目录中的条目信息*/
-    ret = simplefs_dir_del_entry_info(dir, sfs_inode, dentry->d_name.name);
-    if(ret < 0) {
-    	goto out;
+    // 6.删除父目录中的条目信息
+    ret = simplefs_dir_del_entry_info(p_parent_inode, p_sinode, p_dentry->d_name.name);
+    if(unlikely(ret < 0))
+    {
+        goto l_fail;
     }
 
-    pr_info("func[%s],line[%d], sfs_inode[%p] link_counter[%llu]", __FUNCTION__, __LINE__, sfs_inode, sfs_inode->link_counter);
-    //添加硬链接处理逻辑
-    if(sfs_inode->link_counter >= 2) {
-    	dput(dentry);
-    	goto out;
-    }
-    
-    /*释放inode内存空间*/
-    simplefs_inode_del(sb, sfs_inode);
+    pr_info("func[%s],line[%d], sfs_inode[%p] link_counter[%llu]", __FUNCTION__, __LINE__, p_sinode, p_sinode->link_counter);
 
-    /*释放inode指向的data空间*/
-    ret = simplefs_sb_put_a_freeblock(sb,&sfs_inode->data_block_number);
-    
-    /*释放dentry*/
-    dput(dentry);
-    
-out:
+    // 7.添加硬链接处理逻辑
+    if(p_sinode->link_counter >= 2)
+    {
+        dput(p_dentry);
+        goto l_fail;
+    }
+
+    // 8.释放inode内存空间
+    p_sb = p_parent_inode->i_sb;
+    simplefs_inode_del(p_sb, p_sinode);
+
+    // 9.释放inode指向的data空间
+    ret = simplefs_sb_put_a_freeblock(p_sb, &p_sinode->data_block_number);
+
+    // 10.释放dentry
+    dput(p_dentry);
+
+l_fail:
     mutex_unlock(&simplefs_directory_children_update_lock);
+
+l_out:
     return ret;
 
 }

@@ -1324,6 +1324,18 @@ l_out:
 
 }
 
+/*
+* 函数说明:针对文件对象创建符号链接文件
+* 输入参数:struct inode *p_parent_inode
+*			struct dentry *p_dentry
+*			const char * symname
+* 输出参数:无
+* 返回值	 :0表示执行成功;<0表示执行失败
+* 修改说明: 
+*	  时间:2026/09/23
+*	  作者:houchao
+*	  说明:函数优化,增加注释信息
+*/
 static int simplefs_hardlink_fs_object(struct dentry *old_dentry, struct inode *dir,
     		 struct dentry *dentry)
 {
@@ -1355,135 +1367,161 @@ out:
     return ret;	
 }
 
-static int simplefs_symlink_fs_object(struct inode * dir, struct dentry * dentry,
-    			 const char * symname)
+/*
+* 函数说明:针对文件对象创建符号链接文件
+* 输入参数:struct inode *p_parent_inode
+*			struct dentry *p_dentry
+*			const char * symname
+* 输出参数:无
+* 返回值	 :0表示执行成功;<0表示执行失败
+* 修改说明: 
+*	  时间:2026/09/23
+*	  作者:houchao
+*	  说明:函数优化,增加注释信息
+*/
+static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dentry *p_dentry,
+    const char * symname)
 {
-    int ret;
-    struct inode *inode = NULL;
-    struct simplefs_inode *sfs_inode = NULL;
-    struct super_block *sb = dir->i_sb;
-    umode_t mode = S_IFLNK | S_IRWXUGO;
-    char *buff = NULL;
-    struct buffer_head *bh;
-    int len = 0;
-    uint64_t count;
+    struct inode *p_inode              = NULL;
+    struct simplefs_inode *p_sfs_inode = NULL;
+    struct super_block *p_sb           = p_parent_inode->i_sb;
+    umode_t mode                       = S_IFLNK | S_IRWXUGO;
+    char *p_buff                       = NULL;
+    struct buffer_head *p_bh           = NULL;
+    int ret                            = 0;
+    int len                            = 0;
+    uint64_t count                     = 0;
 
     printk("simplefs_symlink_fs_object start.\n");
 
-    //获取互斥锁
-    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return -EINTR;
+    // 1.获取互斥锁
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    {
+        sfs_trace("Failed to acquire mutex lock\n");
+        ret = -EINTR;
+        goto l_out;
     }
 
-    //获取sfs_inode->inode_counts     具体有什么用？
-    ret = simplefs_sb_get_objects_count(sb, &count);
-    if (ret < 0) {
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return ret;
+    // 2.获取sfs_inode->inode_counts
+    ret = simplefs_sb_get_objects_count(p_sb, &count);
+    if (unlikely(ret < 0))
+    {
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_out;
     }
 
-    if (unlikely(count >= SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED)) {
-    /* The above condition can be just == insted of the >= */
+    if (unlikely(count >= SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED))
+    {
+        /* The above condition can be just == insted of the >= */
     	printk(KERN_ERR
     	       "Maximum number of objects supported by simplefs is already reached");
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -ENOSPC;
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        return -ENOSPC;
     }
-    
+
     printk("simplefs_symlink_fs_object new inode.\n");
-    inode = new_inode(sb);
-    if(!inode) {
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -ENOMEM;
+    p_inode = new_inode(p_sb);
+    if(unlikely(NULL == p_inode))
+    {
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        ret = -ENOMEM;
+        goto l_out;
     }
 
     printk("simplefs_symlink_fs_object get sfs inode.\n");
-
-    sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
-    if(NULL == sfs_inode) {
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return -ENOMEM;
+    p_sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
+    if(unlikely(NULL == p_sfs_inode))
+    {
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        ret = -ENOMEM;
+        goto l_out;
     }
+    p_sfs_inode->inode_no = p_inode->i_ino;
+    p_sfs_inode->link_counter = 1;
+    p_inode->i_private = p_sfs_inode;
+    p_sfs_inode->mode = mode;
+    p_inode->i_ino = p_sfs_inode->inode_no;
 
-    sfs_inode->inode_no = inode->i_ino;
-    sfs_inode->link_counter = 1;
-    inode->i_private = sfs_inode;
-    sfs_inode->mode = mode;
-    inode->i_ino = sfs_inode->inode_no;
-
-    if (S_ISDIR(sfs_inode->mode)) {
-    	printk(KERN_INFO "New directory creation request\n");
-    	sfs_inode->dir_children_count = 0;
-    	inode->i_fop = &simplefs_dir_operations;
-    } else if (S_ISREG(sfs_inode->mode)) {
-    	printk(KERN_INFO "New file creation request\n");
-    	sfs_inode->file_size = 0;
-    	inode->i_fop = &simplefs_file_operations;
-    } else if (S_ISLNK(sfs_inode->mode)) {
-    	printk(KERN_INFO "New soft link creation request\n");
-    	sfs_inode->file_size = 0;
-    	inode->i_fop = &simplefs_file_operations;
-    	inode->i_op = &simplefs_symlink_inode_ops;
-    	inode->i_mapping->a_ops = &simplefs_aops;
-    	inode->i_mode = mode;
-    	inode->i_sb = sb;
-    	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+    if (S_ISDIR(p_sfs_inode->mode))
+    {
+        printk(KERN_INFO "New directory creation request\n");
+        p_sfs_inode->dir_children_count = 0;
+        p_inode->i_fop = &simplefs_dir_operations;
+    }
+    else if (S_ISREG(p_sfs_inode->mode))
+    {
+        printk(KERN_INFO "New file creation request\n");
+        p_sfs_inode->file_size = 0;
+        p_inode->i_fop = &simplefs_file_operations;
+    }
+    else if (S_ISLNK(p_sfs_inode->mode))
+    {
+        printk(KERN_INFO "New soft link creation request\n");
+        p_sfs_inode->file_size = 0;
+        p_inode->i_fop = &simplefs_file_operations;
+        p_inode->i_op = &simplefs_symlink_inode_ops;
+        p_inode->i_mapping->a_ops = &simplefs_aops;
+        p_inode->i_mode = mode;
+        p_inode->i_sb = p_sb;
+        p_inode->i_atime = p_inode->i_mtime = p_inode->i_ctime = CURRENT_TIME;
     }
 
     /*申请一块data块区存放symlink路径*/
     printk("simplefs_symlink_fs_object get a free block.\n");
-    ret = simplefs_sb_get_a_freeblock(sb, &sfs_inode->data_block_number);
-    if (ret < 0) {
-    	printk(KERN_ERR "simplefs could not get a freeblock\n");
-    	mutex_unlock(&simplefs_directory_children_update_lock);
-    	return ret;
+    ret = simplefs_sb_get_a_freeblock(p_sb, &p_sfs_inode->data_block_number);
+    if (unlikely(ret < 0))
+    {
+        printk(KERN_ERR "simplefs could not get a freeblock\n");
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_out;
     }
 
-    bh = sb_bread(sb, sfs_inode->data_block_number);
-    BUG_ON(!bh);
-    buff = (char *)bh->b_data;
+    p_bh = sb_bread(p_sb, p_sfs_inode->data_block_number);
+    BUG_ON(!p_bh);
+    p_buff = (char *)p_bh->b_data;
     len = strlen(symname)+1;
-    memcpy(buff, symname, len);
+    memcpy(p_buff, symname, len);
     
-    mark_buffer_dirty(bh);
-    sync_dirty_buffer(bh);
-    brelse(bh);
+    mark_buffer_dirty(p_bh);
+    sync_dirty_buffer(p_bh);
+    brelse(p_bh);
 
-    sfs_inode->file_size = len;
-    inode->i_size = len;
+    p_sfs_inode->file_size = len;
+    p_inode->i_size = len;
 
     /*把sfs_inode添加到sb中*/	
     printk("simplefs_symlink_fs_object add inode to sb.\n");
-    simplefs_inode_add(sb, sfs_inode);
+    simplefs_inode_add(p_sb, p_sfs_inode);
 
     /*在父dir中添加一个条目信息*/	
     printk("simplefs_symlink_fs_object add dir info to datablock.\n");
-    ret = simplefs_dir_add_entry_info(dir,sfs_inode,dentry->d_name.name);
-    if(ret) {
-    	pr_info("simplefs dir add inode failed!\n");
-    	return ret;
+    ret = simplefs_dir_add_entry_info(p_parent_inode, p_sfs_inode, p_dentry->d_name.name);
+    if(unlikely(ret))
+    {
+        pr_info("simplefs dir add inode failed!\n");
+        return ret;
     }
 
     mutex_unlock(&simplefs_directory_children_update_lock);
-    inode_init_owner(inode, dir, mode);
-    d_add(dentry, inode);
+    inode_init_owner(p_inode, p_parent_inode, mode);
+    d_add(p_dentry, p_inode);
     
     printk("simplefs_symlink_fs_object end.\n");
 
-    return 0;
+l_out:
+    return ret;
 }
 
 /*函数说明:文件系统创建目录文件
 * 输入参数:struct inode *p_parent_inode
-           struct dentry *p_dentry
-           umode_t mode
+*           struct dentry *p_dentry
+*           umode_t mode
 * 输出参数:无
 * 返回值	  :0表示执行成功;<0表示执行失败
 * 修改说明: 
-      时间:2026/09/23
-      作者:houchao
-      说明:函数优化,增加注释信息
+*     时间:2026/09/23
+*     作者:houchao
+*     说明:函数优化,增加注释信息
 */
 static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry,
     		  umode_t mode)
@@ -1496,13 +1534,13 @@ static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry,
 
 /*函数说明:文件系统删除目录文件
 * 输入参数:struct inode *p_parent_inode
-		   struct dentry *p_dentry
+*		   struct dentry *p_dentry
 * 输出参数:无
 * 返回值	:0表示执行成功;<0表示执行失败
 * 修改说明: 
-    时间:2026/09/23
-    作者:houchao
-    说明:新增函数
+*   时间:2026/09/23
+*   作者:houchao
+*   说明:新增函数
 */
 static int simplefs_rmdir(struct inode *p_parent_inode, struct dentry *p_dentry)
 {
@@ -1513,18 +1551,18 @@ static int simplefs_rmdir(struct inode *p_parent_inode, struct dentry *p_dentry)
 /*
 * 函数说明:文件系统创建普通文件
 * 输入参数:struct inode *p_dir
-           struct dentry *p_dentry
-           umode_t mode
+*           struct dentry *p_dentry
+*           umode_t mode
 * 输出参数:无
 * 返回值	  :0表示执行成功;<0表示执行失败
 * 修改说明: 
-      时间:2026/09/21
-      作者:houchao
-      说明:函数优化,增加注释信息
-
-      时间:2026/09/23
-      作者:houchao
-      说明:修改注释信息
+*     时间:2026/09/21
+*     作者:houchao
+*     说明:函数优化,增加注释信息
+*
+*     时间:2026/09/23
+*     作者:houchao
+*     说明:修改注释信息
 */
 static int simplefs_create(struct inode *p_dir, struct dentry *p_dentry, umode_t mode, bool excl)
 {
@@ -1534,13 +1572,13 @@ static int simplefs_create(struct inode *p_dir, struct dentry *p_dentry, umode_t
 
 /*函数说明:文件系统删除普通文件
 * 输入参数:struct inode *p_parent_inode
-		   struct dentry *p_dentry
+*		   struct dentry *p_dentry
 * 输出参数:无
 * 返回值	:0表示执行成功;<0表示执行失败
 * 修改说明: 
-    时间:2026/09/23
-    作者:houchao
-    说明:新增函数注释
+*   时间:2026/09/23
+*   作者:houchao
+*   说明:新增函数注释
 */
 static int simplefs_unlink(struct inode *p_parent_inode, struct dentry *p_dentry)
 {
@@ -1564,14 +1602,14 @@ static int simplefs_symlink(struct inode * dir, struct dentry * dentry,
 
 /*函数说明:遍历指定的目录
 * 输入参数:struct inode *p_parent_inode
-      	   struct dentry *p_dentry
-      	   unsigned int flags
+*     	   struct dentry *p_dentry
+*      	   unsigned int flags
 * 输出参数:无
 * 返回值     :struct dentry *,返回dentry指针
 * 修改说明: 
-        时间:2026/09/23
-        作者:houchao
-        说明:新增函数注释,代码优化,减少圈复杂度
+*       时间:2026/09/23
+*       作者:houchao
+*       说明:新增函数注释,代码优化,减少圈复杂度
 */
 struct dentry *simplefs_lookup(struct inode *p_parent_inode, struct dentry *p_dentry, unsigned int flags)
 {
@@ -1623,15 +1661,23 @@ l_out:
     return NULL;
 }
 
-/**
- * Simplest
- */
-void simplefs_destory_inode(struct inode *inode)
+/*
+* 函数说明:删除文件系统sb操作
+* 输入参数:struct inode *p_parent_inode
+*          struct simplefs_inode *p_sfs_inode
+*          const char *filename
+* 输出参数:无
+* 返回值 	:0表示执行成功;<0表示执行失败
+* 修改说明: 
+*    时间:2026/09/23
+*    作者:houchao
+*    说明:函数优化,增加注释信息
+*/
+void simplefs_destory_inode(struct inode *p_inode)
 {
-    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(inode);
+    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(p_inode);
     __PRINT_FUNC_INFO();
-    printk(KERN_INFO "Freeing private data of inode %p (%lu)\n",
-           sfs_inode, inode->i_ino);
+    printk(KERN_INFO "Freeing private data of inode %p (%lu)\n", sfs_inode, p_inode->i_ino);
     kmem_cache_free(sfs_inode_cachep, sfs_inode);
 }
 
@@ -1696,6 +1742,7 @@ static int simplefs_statfs(struct dentry *p_dentry, struct kstatfs *p_buf)
     
     // 6.设置总块数和空闲块数 (df 根据这几个值算容量)
     total_blocks = total_bytes >> p_sb->s_blocksize_bits;
+    pr_info("FUNCTION[%s],LINE[%d], total_blocks:%lld, used_blocks:%lld\n",__FUNCTION__,__LINE__, total_blocks, count);
     p_buf->f_blocks = total_blocks;
     p_buf->f_bfree  = (count > total_blocks) ? 0 : total_blocks - count;
     p_buf->f_bavail = (count > total_blocks) ? 0 : total_blocks - count;
@@ -1817,12 +1864,12 @@ l_out:
 * 函数说明:文件系统mount入口函数
 * 输入参数:struct file_system_type *p_fs_type,表示文件系统结构体
 *          int flags, 挂载类型
-           const char *p_dev_name, 挂载目录
+*          const char *p_dev_name, 挂载目录
 * 输出参数:void *p_data, 指向出参的指针
 * 返回值     :struct dentry *,表示返回root根目录
 * 修改说明: 时间:2026/09/21
-            作者:houchao
-            说明:函数优化,增加注释信息
+*           作者:houchao
+*           说明:函数优化,增加注释信息
 */
 static struct dentry *simplefs_mount(struct file_system_type *p_fs_type, int flags, const char *p_dev_name,
     void *p_data)
@@ -1840,14 +1887,24 @@ static struct dentry *simplefs_mount(struct file_system_type *p_fs_type, int fla
     return ret;
 }
 
-static void simplefs_kill_superblock(struct super_block *sb)
+/*
+* 函数说明:清理sb入口函数
+* 输入参数:struct super_block *p_sb
+* 输出参数:无
+* 返回值 	:无
+* 修改说明: 时间:2026/09/23
+*			作者:houchao
+*			说明:函数优化,增加注释信息
+*/
+static void simplefs_kill_superblock(struct super_block *p_sb)
 {
     printk(KERN_INFO
            "simplefs superblock is destroyed. Unmount succesful.\n");
     /* This is just a dummy function as of now. As our filesystem gets matured,
      * we will do more meaningful operations here */
 
-    kill_block_super(sb);
+    kill_block_super(p_sb);
+
     return;
 }
 
@@ -1868,8 +1925,8 @@ struct file_system_type simplefs_fs_type = {
 * 输出参数:无
 * 返回值     :0表示执行成功;<0表示执行失败
 * 修改说明: 时间:2026/09/21
-            作者:houchao
-            说明:函数优化,增加注释信息
+*           作者:houchao
+*           说明:函数优化,增加注释信息
 *
 */
 static int simplefs_init(void)

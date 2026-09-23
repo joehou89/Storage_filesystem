@@ -847,6 +847,8 @@ struct dentry *simplefs_lookup(struct inode *parent_inode, struct dentry *child_
 
 static int simplefs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
 
+static int simplefs_rmdir(struct inode *p_parent_inode, struct dentry *p_dentry);
+
 static int simplefs_unlink(struct inode *dir, struct dentry *dentry);
 
 static int simplefs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry);
@@ -855,12 +857,13 @@ static int simplefs_symlink(struct inode * dir, struct dentry * dentry, const ch
 
 // 对于simplefs inode实现的op语义操作函数
 static struct inode_operations simplefs_inode_ops = {
-    .create = simplefs_create,
-    .lookup = simplefs_lookup,
-    .mkdir = simplefs_mkdir,
-    .unlink = simplefs_unlink,
-    .link = simplefs_link,
-    .symlink = simplefs_symlink,
+    .create = simplefs_create,    // 创建普通文件
+    .lookup = simplefs_lookup,    // 目录查找
+    .mkdir = simplefs_mkdir,      // 创建目录
+    .rmdir = simplefs_rmdir,      // 删除目录
+    .unlink = simplefs_unlink,    // 删除文件
+    .link = simplefs_link,        // 创建硬链接
+    .symlink = simplefs_symlink,  // 创建符号链接
 };
 
 static struct inode_operations simplefs_symlink_inode_ops = {
@@ -1452,19 +1455,45 @@ static int simplefs_symlink_fs_object(struct inode * dir, struct dentry * dentry
 
     return 0;
 }
-    		 	
-static int simplefs_mkdir(struct inode *dir, struct dentry *dentry,
+
+/*函数说明:文件系统创建目录文件
+* 输入参数:struct inode *p_parent_inode
+           struct dentry *p_dentry
+           umode_t mode
+* 输出参数:无
+* 返回值	  :0表示执行成功;<0表示执行失败
+* 修改说明: 
+      时间:2026/09/23
+      作者:houchao
+      说明:函数优化,增加注释信息
+*/
+static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry,
     		  umode_t mode)
 {
-    return 0;
     __PRINT_FUNC_INFO();
     /* I believe this is a bug in the kernel, for some reason, the mkdir callback
      * does not get the S_IFDIR flag set. Even ext2 sets is explicitly */
-    return simplefs_create_fs_object(dir, dentry, S_IFDIR | mode);
+    return simplefs_create_fs_object(p_parent_inode, p_dentry, S_IFDIR | mode);
+}
+
+/*函数说明:文件系统删除目录文件
+* 输入参数:struct inode *p_parent_inode
+		   struct dentry *p_dentry
+* 输出参数:无
+* 返回值	:0表示执行成功;<0表示执行失败
+* 修改说明: 
+    时间:2026/09/23
+    作者:houchao
+    说明:新增函数
+*/
+static int simplefs_rmdir(struct inode *p_parent_inode, struct dentry *p_dentry)
+{
+    __PRINT_FUNC_INFO();
+    return simplefs_delete_fs_object(p_parent_inode, p_dentry);
 }
 
 /*
-* 函数说明:文件系统创建或打开一个文件时inode层面的创建操作
+* 函数说明:文件系统创建普通文件
 * 输入参数:struct inode *p_dir
            struct dentry *p_dentry
            umode_t mode
@@ -1474,17 +1503,31 @@ static int simplefs_mkdir(struct inode *dir, struct dentry *dentry,
       时间:2026/09/21
       作者:houchao
       说明:函数优化,增加注释信息
+
+      时间:2026/09/23
+      作者:houchao
+      说明:修改注释信息
 */
 static int simplefs_create(struct inode *p_dir, struct dentry *p_dentry, umode_t mode, bool excl)
 {
     __PRINT_FUNC_INFO();
     return simplefs_create_fs_object(p_dir, p_dentry, mode);
 }
-    		   
-static int simplefs_unlink(struct inode *dir, struct dentry *dentry)
+
+/*函数说明:文件系统删除普通文件
+* 输入参数:struct inode *p_parent_inode
+		   struct dentry *p_dentry
+* 输出参数:无
+* 返回值	:0表示执行成功;<0表示执行失败
+* 修改说明: 
+    时间:2026/09/23
+    作者:houchao
+    说明:新增函数注释
+*/
+static int simplefs_unlink(struct inode *p_parent_inode, struct dentry *p_dentry)
 {
     __PRINT_FUNC_INFO();
-    return simplefs_delete_fs_object(dir, dentry);
+    return simplefs_delete_fs_object(p_parent_inode, p_dentry);
 }
 
 static int simplefs_link(struct dentry *old_dentry, struct inode *dir,

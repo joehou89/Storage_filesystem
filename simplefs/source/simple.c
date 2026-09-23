@@ -1068,18 +1068,35 @@ static void simplefs_file_ops(struct inode *p_inode, struct simplefs_inode *p_sf
     BUG_ON(NULL == p_inode || NULL == p_sfs_inode);
 
     // 2.通过mode执行判断处理
-    if (S_ISDIR(mode))  // 针对目录文件填充file操作指针
+    switch (mode & S_IFMT)
     {
-    	printk(KERN_INFO "new directory creation request\n");
-    	p_sfs_inode->dir_children_count = 0;  // 针对目录文件,子条目数为0
-    	p_inode->i_fop = &simplefs_dir_operations;
-    }
-    else if (S_ISREG(mode)) // 针对普通文件填充file操作指针
-    {
-    	printk(KERN_INFO "new file creation request\n");
-    	p_sfs_inode->file_size = 0;  // 针对普通文件, 文件大小为0
-    	p_inode->i_fop = &simplefs_file_operations;
-    	p_inode->i_mapping->a_ops = &simplefs_aops;	//用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
+        case S_IFDIR:  // 针对目录文件填充file操作指针
+        {
+            printk(KERN_INFO "new directory creation request\n");
+            p_sfs_inode->dir_children_count = 0;  // 针对目录文件,子条目数为0
+            p_inode->i_fop = &simplefs_dir_operations;
+            break;
+        }
+        case S_IFREG:  // 针对普通文件填充file操作指针
+        {
+            printk(KERN_INFO "new file creation request\n");
+            p_sfs_inode->file_size = 0;  // 针对普通文件, 文件大小为0
+            p_inode->i_fop = &simplefs_file_operations;
+            //用于封装I/O缓存读写的操作表，i_mapping是用于管理缓冲项和页I/O操作,相关操作表封装在a_ops里
+            p_inode->i_mapping->a_ops = &simplefs_aops;
+            break;
+        }
+        case S_IFLNK:
+        {
+            p_inode->i_op = &simplefs_symlink_inode_ops;
+            p_inode->i_mapping->a_ops = &simplefs_aops;
+            break;
+        }
+        default:
+        {
+            printk(KERN_ERR "Unknown inode type. Neither a directory nor a file");
+            BUG_ON(true);
+        }
     }
 
     return;
@@ -1543,73 +1560,67 @@ static int simplefs_symlink(struct inode * dir, struct dentry * dentry,
     __PRINT_FUNC_INFO();
     return simplefs_symlink_fs_object(dir, dentry, symname);
 }
-    		 	
-struct dentry *simplefs_lookup(struct inode *parent_inode,
-    		       struct dentry *child_dentry, unsigned int flags)
+
+/*函数说明:遍历指定的目录
+* 输入参数:struct inode *p_parent_inode
+      	   struct dentry *p_dentry
+      	   unsigned int flags
+* 输出参数:无
+* 返回值     :struct dentry *,返回dentry指针
+* 修改说明: 
+        时间:2026/09/23
+        作者:houchao
+        说明:新增函数注释,代码优化,减少圈复杂度
+*/
+struct dentry *simplefs_lookup(struct inode *p_parent_inode, struct dentry *p_dentry, unsigned int flags)
 {
-    struct simplefs_inode *parent = SIMPLEFS_INODE(parent_inode);
-    struct super_block *sb = parent_inode->i_sb;
-    struct buffer_head *bh;
-    struct simplefs_dir_record *record;
-    int i;
+    struct simplefs_inode *p_parent_sinode   = SIMPLEFS_INODE(p_parent_inode);
+    struct simplefs_dir_record *p_dir_record = NULL;
+    struct inode *p_inode                    = NULL;
+    struct simplefs_inode *p_sfs_inode       = NULL;
+    struct super_block *p_sb                 = p_parent_inode->i_sb;
+    struct buffer_head *p_bh                 = NULL;
+    int i                                    = 0;
     
     __PRINT_FUNC_INFO();
-    bh = sb_bread(sb, parent->data_block_number);
-    BUG_ON(!bh);
+    // 1.首先通过父inode的指针找到对应文件系统的私有指针,根据sinode->data_block_number读取盘上对应数据块的内容到内存
+    p_bh = sb_bread(p_sb, p_parent_sinode->data_block_number);
+    BUG_ON(!p_bh);
 
-    record = (struct simplefs_dir_record *)bh->b_data;
-    for (i = 0; i < parent->dir_children_count; i++) {
-    	if (!strcmp(record->filename, child_dentry->d_name.name)) {
-    		/* FIXME: There is a corner case where if an allocated inode,
-    		 * is not written to the inode store, but the inodes_count is
-    		 * incremented. Then if the random string on the disk matches
-    		 * with the filename that we are comparing above, then we
-    		 * will use an invalid uninitialized inode */
+    // 2.强转b_data内存为目录结构体指针, 进行遍历操作
+    p_dir_record = (struct simplefs_dir_record *)p_bh->b_data;
+    for (i = 0; i < p_parent_sinode->dir_children_count; i++)
+    {
+        if (0 == strcmp(p_dir_record->filename, p_dentry->d_name.name))
+        {
+            /* FIXME: There is a corner case where if an allocated inode,
+             * is not written to the inode store, but the inodes_count is
+             * incremented. Then if the random string on the disk matches
+             * with the filename that we are comparing above, then we
+             * will use an invalid uninitialized inode */
 
-    		struct inode *inode;
-    		struct simplefs_inode *sfs_inode;
-
-    		sfs_inode = simplefs_get_inode(sb, record->inode_no);
-
-    		inode = new_inode(sb);
-    		inode->i_ino = record->inode_no;
-    		inode_init_owner(inode, parent_inode, sfs_inode->mode);
-    		inode->i_sb = sb;
-    		inode->i_op = &simplefs_inode_ops;
-
-    		if (S_ISDIR(inode->i_mode))
-    			inode->i_fop = &simplefs_dir_operations;
-    		else if (S_ISREG(inode->i_mode)) {
-    			inode->i_fop = &simplefs_file_operations;
-    			inode->i_mapping->a_ops = &simplefs_aops;
-    		}
-    		else if (S_ISLNK(inode->i_mode)) {
-    			inode->i_op = &simplefs_symlink_inode_ops;
-    			inode->i_mapping->a_ops = &simplefs_aops;
-    		}
-    		else
-    			printk(KERN_ERR
-    			       "Unknown inode type. Neither a directory nor a file");
-
-    		/* FIXME: We should store these times to disk and retrieve them */
-    		inode->i_atime = inode->i_mtime = inode->i_ctime =
-    		    CURRENT_TIME;
-
-    		inode->i_private = sfs_inode;
-
-    		d_add(child_dentry, inode);
-    		return NULL;
-    	}
-    	record++;
+            p_sfs_inode = simplefs_get_inode(p_sb, p_dir_record->inode_no);
+            p_inode = new_inode(p_sb);
+            inode_init_owner(p_inode, p_parent_inode, p_sfs_inode->mode);
+            // 填充inode file op操作函数
+            simplefs_file_ops(p_inode, p_sfs_inode, p_inode->i_mode);
+            p_inode->i_ino = p_dir_record->inode_no;
+            p_inode->i_sb = p_sb;
+            p_inode->i_op = &simplefs_inode_ops;
+            /* FIXME: We should store these times to disk and retrieve them */
+            p_inode->i_atime = p_inode->i_mtime = p_inode->i_ctime = CURRENT_TIME;
+            p_inode->i_private = p_sfs_inode;
+            d_add(p_dentry, p_inode);
+            goto l_out;
+        }
+        p_dir_record++;
     }
 
-    printk(KERN_ERR
-           "No inode found for the filename [%s]\n",
-           child_dentry->d_name.name);
+    printk(KERN_ERR "no inode found for the filename [%s]\n", p_dentry->d_name.name);
 
+l_out:
     return NULL;
 }
-
 
 /**
  * Simplest

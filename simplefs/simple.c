@@ -1149,12 +1149,12 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     p_inode->i_op = &simplefs_inode_ops;  // 目录或普通文件inode操作集
     p_inode->i_atime = p_inode->i_mtime = p_inode->i_ctime = CURRENT_TIME;
     p_inode->i_ino = (count + SIMPLEFS_START_INO - SIMPLEFS_RESERVED_INODES + 1);
-    
+
     // 5.分配一个新的simplefs文件系统的私有sfs_inode
     p_sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
     if (unlikely(NULL == p_sfs_inode))
     {
-        iput(p_inode);  // 需要提前释放掉p_inode内存,避免内存泄露
+        iput(p_inode);
         ret = -ENOMEM;
         goto l_unlock;
     }

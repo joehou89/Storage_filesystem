@@ -1729,21 +1729,21 @@ static int simplefs_statfs(struct dentry *p_dentry, struct kstatfs *p_buf)
     }
 
     // 2.加锁,目录子节点锁
-    /*if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
     {
         sfs_trace("failed to acquire mutex lock\n");
         ret = -EINTR;
 	    goto l_out;
-    }*/
+    }
 
     // 3.获取当前已使用的块数量
     ret = simplefs_sb_get_objects_count(p_sb, &count);
     if (unlikely(ret < 0))
     {
-        //mutex_unlock(&simplefs_directory_children_update_lock);
+        mutex_unlock(&simplefs_directory_children_update_lock);
         goto l_out;
     }
-    //mutex_unlock(&simplefs_directory_children_update_lock);
+    mutex_unlock(&simplefs_directory_children_update_lock);
 
     // 4.设置文件系统魔数
     p_buf->f_type = SIMPLEFS_MAGIC;

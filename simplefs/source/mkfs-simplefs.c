@@ -89,15 +89,18 @@ static int write_inode_store(int fd)
     root_inode.link_counter = 1; //初始化硬链接计数 modify 2019-05-19
 
     ret = write(fd, &root_inode, sizeof(root_inode));
-
-    if (ret != sizeof(root_inode)) {
-    	printf
-    	    ("The inode store was not written properly. Retry your mkfs\n");
-    	return -1;
+    if (ret != sizeof(root_inode))
+    {
+        printf("The inode store was not written properly. Retry your mkfs\n");
+        ret = -1;
+        goto l_out;
     }
 
     printf("root directory inode written succesfully\n");
-    return 0;
+    ret = 0;
+
+l_out:
+    return ret;
 }
 
 static int write_inode(int fd, const struct simplefs_inode *i)

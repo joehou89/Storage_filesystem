@@ -117,6 +117,7 @@ void simplefs_inode_add(struct super_block *p_sb, struct simplefs_inode *p_sinod
     p_tmp_sinode += p_ssb->inodes_count;
     //memcpy(p_tmp_sinode, p_sinode, sizeof(struct simplefs_inode));
     p_ssb->inodes_count++;
+    printk("simplefs_inode_add: simplefs_super_block inodes count: %lld\n", p_ssb->inodes_count);
 
     // 持久化sb、buffer head内存信息
     simplefs_sb_sync(p_sb);
@@ -173,27 +174,30 @@ static void *simplefs_follow_link(struct dentry *dentry, struct nameidata *nd)
 }
 
 
-void simplefs_inode_del(struct super_block *vsb, struct simplefs_inode *inode)
+void simplefs_inode_del(struct super_block *p_sb, struct simplefs_inode *inode)
 {
-    struct simplefs_super_block *sb = SIMPLEFS_SB(vsb);
-    struct buffer_head *bh;
-    struct simplefs_inode *inode_iterator;
+    struct simplefs_super_block *p_ssb = SIMPLEFS_SB(p_sb);
+    struct simplefs_inode *p_sinode = NULL;
+    struct buffer_head *p_bh        = NULL;
     
-    if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	return;
+    if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock))
+    {
+        sfs_trace("Failed to acquire mutex lock\n");
+        goto l_out;
     }
     
-    //获取一个bh
-    bh = sb_bread(vsb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
-    BUG_ON(!bh);
+    // 1.读取磁盘第1块内容到内存缓存区
+    p_bh = sb_bread(p_sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+    BUG_ON(!p_bh);
 
-    inode_iterator = (struct simplefs_inode *)bh->b_data;
+    // 2.将磁盘内容强转成对应的simplefs inode内容
+    p_sinode = (struct simplefs_inode *)p_bh->b_data;
 
-    //获取一把sb_lock锁
-    if (mutex_lock_interruptible(&simplefs_sb_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	goto out_mgmt;
+    // 3.获取一把sb_lock锁
+    if (mutex_lock_interruptible(&simplefs_sb_lock))
+    {
+        sfs_trace("failed to acquire simplefs sb lock\n");
+        goto l_fail;
     }	
 
     //查找一个sfs_inode
@@ -203,17 +207,23 @@ void simplefs_inode_del(struct super_block *vsb, struct simplefs_inode *inode)
     //}
 
     //inode_iterator += inode->inode_no;
-    inode_iterator += sb->inodes_count;
-    memset(inode_iterator, 0x0, sizeof(struct simplefs_inode));
-    sb->inodes_count--;
-    
-    mark_buffer_dirty(bh);
-    simplefs_sb_sync(vsb);
-    brelse(bh);
-    
+    p_sinode += p_ssb->inodes_count;
+    memset(p_sinode, 0x0, sizeof(struct simplefs_inode));
+    p_ssb->inodes_count--;
+    printk("simplefs_inode_del: simplefs_super_block inodes count: %lld\n", p_ssb->inodes_count);
+
+    simplefs_sb_sync(p_sb);
+    mark_buffer_dirty(p_bh);
+    sync_dirty_buffer(p_bh);
+    brelse(p_bh);
+
     mutex_unlock(&simplefs_sb_lock);
-    
-out_mgmt:
+    mutex_unlock(&simplefs_inodes_mgmt_lock);
+
+l_out:
+    return;
+
+l_fail:
     mutex_unlock(&simplefs_inodes_mgmt_lock);
 }
 
@@ -1172,7 +1182,7 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
     p_inode->i_ino = (count + SIMPLEFS_START_INO - SIMPLEFS_RESERVED_INODES + 1);
 
     // 5.分配一个新的simplefs文件系统的私有sfs_inode
-    p_sfs_inode = kmem_cache_alloc(sfs_inode_cachep, GFP_KERNEL);
+    p_sfs_inode = kmem_cache_zalloc(sfs_inode_cachep, GFP_KERNEL);
     if (unlikely(NULL == p_sfs_inode))
     {
         iput(p_inode);
@@ -1180,6 +1190,7 @@ static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry
         goto l_unlock;
     }
     p_sfs_inode->inode_no = p_inode->i_ino;
+    pr_info("__FUNCTION[%s],LINE[%d], inode_no: %lld\n",__FUNCTION__,__LINE__, p_sfs_inode->inode_no);
     p_inode->i_private = p_sfs_inode;  // vfs和simplefs的内存inode通过i_private绑定
     p_sfs_inode->mode = mode;
 
@@ -1297,11 +1308,12 @@ static int simplefs_delete_fs_object(struct inode *p_parent_inode, struct dentry
         goto l_fail;
     }
 
-    pr_info("func[%s],line[%d], sfs_inode[%p] link_counter[%llu]", __FUNCTION__, __LINE__, p_sinode, p_sinode->link_counter);
+    pr_info("func[%s],line[%d], sfs_inode[%p] link_counter[%llu]\n", __FUNCTION__, __LINE__, p_sinode, p_sinode->link_counter);
 
     // 7.添加硬链接处理逻辑
     if(p_sinode->link_counter >= 2)
     {
+        printk("simplefs_delete_fs_object: handle link ops, p_sinode->link_counter: %lld\n", p_sinode->link_counter);
         dput(p_dentry);
         goto l_fail;
     }
@@ -1717,21 +1729,21 @@ static int simplefs_statfs(struct dentry *p_dentry, struct kstatfs *p_buf)
     }
 
     // 2.加锁,目录子节点锁
-    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    /*if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
     {
         sfs_trace("failed to acquire mutex lock\n");
         ret = -EINTR;
 	    goto l_out;
-    }
+    }*/
 
     // 3.获取当前已使用的块数量
     ret = simplefs_sb_get_objects_count(p_sb, &count);
     if (unlikely(ret < 0))
     {
-        mutex_unlock(&simplefs_directory_children_update_lock);
+        //mutex_unlock(&simplefs_directory_children_update_lock);
         goto l_out;
     }
-    mutex_unlock(&simplefs_directory_children_update_lock);
+    //mutex_unlock(&simplefs_directory_children_update_lock);
 
     // 4.设置文件系统魔数
     p_buf->f_type = SIMPLEFS_MAGIC;

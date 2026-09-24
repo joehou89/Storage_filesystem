@@ -1,3 +1,16 @@
+/************************************************************************************* 
+                      版权所有 (C), 2016-2026
+************************************************************************************** 
+文 件 名 : mkfs-simplefs.c
+版 本 号 : version 1.0
+作     者  : houchao
+生成日期 : 2026 年 9 月 23 日
+功能描述 : 对simplefs文件系统进行格式化操作
+修改历史 :
+    1.日 期 : 2026 年 9 月 23 日
+      作 者 :   houchao
+   修改内容 : 优化代码
+*************************************************************************************/
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -6,7 +19,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "simple.h"
 
 const uint64_t WELCOMEFILE_DATABLOCK_NUMBER = 3;
@@ -14,28 +26,33 @@ const uint64_t WELCOMEFILE_INODE_NUMBER = 2;
 
 static int write_superblock(int fd)
 {
-    struct simplefs_super_block sb = {
-    	.version = 1,
-    	.magic = SIMPLEFS_MAGIC,
-    	.block_size = SIMPLEFS_DEFAULT_BLOCK_SIZE,														//定义文件系统块长度，单位为4KB
-    	/* One inode for rootdirectory and another for a welcome file that we are going to create */
-    	.inodes_count = 2,
-    	/* FIXME: Free blocks management is not implemented yet */
-    	.free_blocks = (~0) & ~(1UL << WELCOMEFILE_DATABLOCK_NUMBER),
+    ssize_t ret = 0;
+
+    struct simplefs_super_block sb =
+    {
+        .version = 1,
+        .magic = SIMPLEFS_MAGIC,
+        .block_size = SIMPLEFS_DEFAULT_BLOCK_SIZE,  //定义文件系统块长度，单位为4KB
+        /* One inode for rootdirectory and another for a welcome file that we are going to create */
+        .inodes_count = 1,
+        /* FIXME: Free blocks management is not implemented yet */
+        .free_blocks = (~0) & ~(1UL << WELCOMEFILE_DATABLOCK_NUMBER),
     };
-    ssize_t ret;
 
     printf("write_superblock sb.free_blocks[%d]\n", sb.free_blocks);
 
     ret = write(fd, &sb, sizeof(sb));
-    if (ret != SIMPLEFS_DEFAULT_BLOCK_SIZE) {
-    	printf
-    	    ("bytes written [%d] are not equal to the default block size\n",
-    	     (int)ret);
-    	return -1;
+    if (ret != SIMPLEFS_DEFAULT_BLOCK_SIZE)
+    {
+    	printf("bytes written [%d] are not equal to the default block size\n", (int)ret);
+        ret = -1;
+        goto l_out;
     }
 
-    printf("Super block written succesfully\n");
+    printf("super block written succesfully\n");
+
+l_out:
+
     return 0;
 }
 
@@ -127,51 +144,60 @@ int write_block(int fd, char *block, size_t len)
 
 int main(int argc, char *argv[])
 {
-    int fd;
-    ssize_t ret;
+    int fd      = 0;
+    ssize_t ret = 0;
 
     char welcomefile_body[] = "Love is God. God is Love. Anbe Murugan.\n";
-    struct simplefs_inode welcome = {
-    	.mode = S_IFREG,
-    	.inode_no = WELCOMEFILE_INODE_NUMBER,
-    	.data_block_number = WELCOMEFILE_DATABLOCK_NUMBER,
-    	.file_size = sizeof(welcomefile_body),
-    	.link_counter = 1, //初始化硬链接计数 modify 2019-05-19
-    };
-    struct simplefs_dir_record record = {
-    	.filename = "vanakkam",
-    	.inode_no = WELCOMEFILE_INODE_NUMBER,
+    struct simplefs_inode welcome =
+    {
+        .mode = S_IFREG,
+        .inode_no = WELCOMEFILE_INODE_NUMBER,
+        .data_block_number = WELCOMEFILE_DATABLOCK_NUMBER,
+        .file_size = sizeof(welcomefile_body),
+        .link_counter = 1, //初始化硬链接计数 modify 2019-05-19
     };
 
-    if (argc != 2) {
-    	printf("Usage: mkfs-simplefs <device>\n");
-    	return -1;
+    struct simplefs_dir_record record =
+    {
+        .filename = "vanakkam",
+        .inode_no = WELCOMEFILE_INODE_NUMBER,
+    };
+
+    if (argc != 2)
+    {
+        printf("Usage: mkfs-simplefs <device>\n");
+        ret = -1;
+        goto l_out;
     }
 
     fd = open(argv[1], O_RDWR);
-    if (fd == -1) {
-    	perror("Error opening the device");
-    	return -1;
+    if (fd == -1)
+    {
+        perror("Error opening the device");
+        ret = -1;
+        goto l_out;
     }
 
     ret = 1;
-    do {
-    	if (write_superblock(fd))
+
+    do
+    {
+        if (write_superblock(fd))
     		break;
     	if (write_inode_store(fd))
     		break;
-
-    	if (write_inode(fd, &welcome))
+    	/*if (write_inode(fd, &welcome))
     		break;
     	if (write_dirent(fd, &record))
     		break;
     	if (write_block(fd, welcomefile_body, welcome.file_size))
-    		break;
-
+    		break;*/
 
     	ret = 0;
     } while (0);
 
     close(fd);
+
+l_out:
     return ret;
 }

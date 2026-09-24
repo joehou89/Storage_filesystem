@@ -81,10 +81,8 @@ struct simplefs_super_block {
     uint64_t version;															//超级块版本号
     uint64_t magic;																//文件系统魔术字
     uint64_t block_size;														//文件系统块长度(以字节为单位)
-
     /* FIXME: This should be moved to the inode store and not part of the sb */
     uint64_t inodes_count;														//文件系统里创建文件inode计数
-
     uint64_t free_blocks;														//超级块内剩余块个数
     char padding[SIMPLEFS_DEFAULT_BLOCK_SIZE - (5 * sizeof(uint64_t))];			//for what?
 };

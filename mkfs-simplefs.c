@@ -78,8 +78,7 @@ l_out:
 */
 static int write_inode_store(int fd)
 {
-    ssize_t ret = 0;
-
+    ssize_t ret                      = 0;
     struct simplefs_inode root_inode;
 
     root_inode.mode = S_IFDIR;

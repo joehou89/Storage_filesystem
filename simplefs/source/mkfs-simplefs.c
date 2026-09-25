@@ -63,7 +63,7 @@ static int write_superblock(int fd)
 
 l_out:
 
-    return 0;
+    return (-1 == ret) ? -1 : 0;
 }
 
 /*

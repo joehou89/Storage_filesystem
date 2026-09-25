@@ -259,13 +259,14 @@ int simplefs_sb_get_a_freeblock(struct super_block *p_sb, uint64_t *p_block_numb
     }
 
     p_simple_sb = SIMPLEFS_SB(p_sb);
-    printk("%s %d sb->free_blocks[%d] start\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks);
+    printk("%s %d sb->free_blocks start, %d, %d\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks,
+        simplefs_cal_free_blks(p_simple_sb->free_blocks));
 
     /* Loop until we find a free block. We start the loop from 3,
      * as all prior blocks will always be in use */
     for (i = 3; i < SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED; i++)
     {
-        printk("simplefs_sb_get_a_freeblock circle i[%d]\n", i);
+        //printk("simplefs_sb_get_a_freeblock circle i[%d]\n", i);
         if (p_simple_sb->free_blocks & (1UL << i))
         {
             break;
@@ -286,7 +287,8 @@ int simplefs_sb_get_a_freeblock(struct super_block *p_sb, uint64_t *p_block_numb
 
     /* Remove the identified block from the free list */
     p_simple_sb->free_blocks &= ~(1UL << i);
-    printk("%s %d sb->free_blocks[%d] end\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks);
+    printk("%s %d sb->free_blocks end, %d, %d\n", __FUNCTION__, __LINE__, (int)p_simple_sb->free_blocks,
+        simplefs_cal_free_blks(p_simple_sb->free_blocks));
 
     simplefs_sb_sync(p_sb);
 
@@ -1113,17 +1115,16 @@ static void simplefs_file_ops(struct inode *p_inode, struct simplefs_inode *p_sf
     return;
 }
 
-/*
-* 函数说明:文件系统创建或打开一个文件时inode层面的具体创建操作
+/*函数说明:文件系统创建或打开一个文件时inode层面的具体创建操作
 * 输入参数:struct inode *p_dir
-           struct dentry *p_dentry
-           umode_t mode
+*           struct dentry *p_dentry
+*           umode_t mode
 * 输出参数:无
 * 返回值	  :0表示执行成功;<0表示执行失败
 * 修改说明: 
-      时间:2026/09/21
-      作者:houchao
-      说明:函数优化,增加注释信息
+*     时间:2026/09/21
+*     作者:houchao
+*     说明:函数优化,增加注释信息
 */
 static int simplefs_create_fs_object(struct inode *p_parent_inode, struct dentry *p_dentry, umode_t mode)
 {
@@ -1632,7 +1633,7 @@ struct dentry *simplefs_lookup(struct inode *p_parent_inode, struct dentry *p_de
     struct super_block *p_sb                 = p_parent_inode->i_sb;
     struct buffer_head *p_bh                 = NULL;
     int i                                    = 0;
-    
+
     __PRINT_FUNC_INFO();
     // 1.首先通过父inode的指针找到对应文件系统的私有指针,根据sinode->data_block_number读取盘上对应数据块的内容到内存
     p_bh = sb_bread(p_sb, p_parent_sinode->data_block_number);

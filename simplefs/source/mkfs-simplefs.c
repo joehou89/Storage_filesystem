@@ -49,7 +49,7 @@ static int write_superblock(int fd)
         .free_blocks = (~0) & ~(1UL << WELCOMEFILE_DATABLOCK_NUMBER),
     };
 
-    printf("write_superblock sb.free_blocks[%d]\n", sb.free_blocks);
+    printf("write_superblock sb.free_blocks:%x, %d\n", sb.free_blocks, simplefs_cal_free_blks(sb.free_blocks));
 
     ret = write(fd, &sb, sizeof(sb));
     if (ret != SIMPLEFS_DEFAULT_BLOCK_SIZE)

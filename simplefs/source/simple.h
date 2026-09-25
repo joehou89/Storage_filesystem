@@ -93,3 +93,23 @@ struct simplefs_symlink_record {
     char filename[SIMPLEFS_SYMLINK_PATH_MAX];
 };
 
+/*函数说明:统计当前剩余可用数据块数量
+* 输入参数:uint64_t num
+* 输出参数:无
+* 返回值	  :剩余可用数据块数量
+* 修改说明: 
+*     时间:2026/09/25
+*     作者:houchao
+*     说明:新增函数
+*/
+int simplefs_cal_free_blks(uint64_t num)
+{
+    int count = 0;
+
+    while (num)
+    {
+        count += (num & 1);
+        num >>= 1;
+    }
+    return count;
+}

@@ -46,7 +46,8 @@ static int write_superblock(int fd)
         /* One inode for rootdirectory and another for a welcome file that we are going to create */
         .inodes_count = 1,
         /* FIXME: Free blocks management is not implemented yet */
-        .free_blocks = (~0) & ~(1UL << WELCOMEFILE_DATABLOCK_NUMBER),
+        //.free_blocks = (~0) & ~(1UL << WELCOMEFILE_DATABLOCK_NUMBER),
+        .free_blocks = (~0),
     };
 
     printf("write_superblock sb.free_blocks:%x, %d\n", sb.free_blocks, simplefs_cal_free_blks(sb.free_blocks));
@@ -78,9 +79,8 @@ l_out:
 */
 static int write_inode_store(int fd)
 {
-    ssize_t ret = 0;
-
-    struct simplefs_inode root_inode;
+    ssize_t ret                      = 0;
+    struct simplefs_inode root_inode = {};
 
     root_inode.mode = S_IFDIR;
     root_inode.inode_no = SIMPLEFS_ROOTDIR_INODE_NUMBER;
@@ -105,64 +105,80 @@ l_out:
 
 static int write_inode(int fd, const struct simplefs_inode *i)
 {
-    off_t nbytes;
-    ssize_t ret;
+    off_t nbytes = 0;
+    ssize_t ret  = 0;
 
     ret = write(fd, i, sizeof(*i));
-    if (ret != sizeof(*i)) {
-    	printf
-    	    ("The welcomefile inode was not written properly. Retry your mkfs\n");
-    	return -1;
+    if (ret != sizeof(*i))
+    {
+        printf("The welcomefile inode was not written properly. Retry your mkfs\n");
+        ret = -1;
+        goto l_out;
     }
     printf("welcomefile inode written succesfully\n");
 
     nbytes = SIMPLEFS_DEFAULT_BLOCK_SIZE - sizeof(*i) - sizeof(*i);
     ret = lseek(fd, nbytes, SEEK_CUR);
-    if (ret == (off_t)-1) {
-    	printf
-    	    ("The padding bytes are not written properly. Retry your mkfs\n");
-    	return -1;
+    if (ret == (off_t)-1)
+    {
+        printf("The padding bytes are not written properly. Retry your mkfs\n");
+        ret = -1;
+        goto l_out;
     }
+    printf("inode store padding bytes (after the two inodes) written sucessfully\n");
 
-    printf
-        ("inode store padding bytes (after the two inodes) written sucessfully\n");
-    return 0;
+    ret = 0;
+
+l_out:
+    return ret;
 }
+
 int write_dirent(int fd, const struct simplefs_dir_record *record)
 {
-    ssize_t nbytes = sizeof(*record), ret;
+    ssize_t nbytes = sizeof(*record);
+    ssize_t ret    = 0;
 
     ret = write(fd, record, nbytes);
-    if (ret != nbytes) {
-    	printf
-    	    ("Writing the rootdirectory datablock (name+inode_no pair for welcomefile) has failed\n");
-    	return -1;
+    if (ret != nbytes)
+    {
+        printf("Writing the rootdirectory datablock (name+inode_no pair for welcomefile) has failed\n");
+        ret = -1;
+        goto l_out;
     }
-    printf
-        ("root directory datablocks (name+inode_no pair for welcomefile) written succesfully\n");
+    printf("root directory datablocks (name+inode_no pair for welcomefile) written succesfully\n");
 
     nbytes = SIMPLEFS_DEFAULT_BLOCK_SIZE - sizeof(*record);
     ret = lseek(fd, nbytes, SEEK_CUR);
-    if (ret == (off_t)-1) {
-    	printf
-    	    ("Writing the padding for rootdirectory children datablock has failed\n");
-    	return -1;
+    if (ret == (off_t)-1)
+    {
+        printf("Writing the padding for rootdirectory children datablock has failed\n");
+        ret = -1;
+        goto l_out;
     }
-    printf
-        ("padding after the rootdirectory children written succesfully\n");
-    return 0;
+    printf("padding after the rootdirectory children written succesfully\n");
+
+    ret = 0;
+l_out:
+    return ret;
 }
+
 int write_block(int fd, char *block, size_t len)
 {
-    ssize_t ret;
+    ssize_t ret = 0;
 
     ret = write(fd, block, len);
-    if (ret != len) {
-    	printf("Writing file body has failed\n");
-    	return -1;
+    if (ret != len)
+    {
+        printf("Writing file body has failed\n");
+        ret = -1;
+        goto l_out;
     }
+
     printf("block has been written succesfully\n");
-    return 0;
+    ret = 0;
+
+l_out:
+    return ret;
 }
 
 int main(int argc, char *argv[])

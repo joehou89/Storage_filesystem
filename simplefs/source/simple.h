@@ -56,15 +56,17 @@ struct simplefs_dir_record {
     uint64_t inode_no;
 };
 
-struct simplefs_inode {
+struct simplefs_inode
+{
     mode_t mode;					//文件类型和访问权限
     uint64_t inode_no;				//inode编号
     uint64_t data_block_number;		//数据块编号
     uint64_t link_counter; 			//simplefs文件系统支持硬链接计数 modify 2019-05-19
 
-    union {
-    	uint64_t file_size;			//文件长度(以字节为单位)
-    	uint64_t dir_children_count;//unused currently
+    union
+    {
+        uint64_t file_size;			//文件长度(以字节为单位)
+        uint64_t dir_children_count;//unused currently
     };
 };
 

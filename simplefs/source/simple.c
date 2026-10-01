@@ -467,112 +467,112 @@ struct simplefs_inode *simplefs_get_inode(struct super_block *p_sb, uint64_t ino
     return p_tmp_inode;
 }
 
-ssize_t simplefs_read(struct file * filp, char __user * buf, size_t len, loff_t * ppos)
+ssize_t simplefs_read(struct file *p_filp, char __user *p_buf, size_t len, loff_t *p_pos)
 {
     /* After the commit dd37978c5 in the upstream linux kernel,
      * we can use just filp->f_inode instead of the
      * f->f_path.dentry->d_inode redirection */
-    struct inode *inode = filp->f_inode;
-    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(filp->f_path.dentry->d_inode);
-    struct buffer_head *bh;
-    char *buffer;
-    int nbytes;
-    pgoff_t index;
-    struct address_space *mapping;
-    struct page *page;
-    char *kaddr = NULL;
-    int ret;
-    
-    index = *ppos >> PAGE_CACHE_SHIFT;
-    mapping = inode->i_mapping;	//获取inode内存地址映射指针
+    struct inode *p_inode              = p_filp->f_inode;
+    struct simplefs_inode *p_sfs_inode = SIMPLEFS_INODE(p_filp->f_path.dentry->d_inode);
+    struct buffer_head *p_bh           = NULL;
+    char *p_buffer                     = NULL;
+    struct address_space *p_mapping    = NULL;
+    struct page *p_page                = NULL;
+    char *p_kaddr                      = NULL;
+    int nbytes                         = 0;
+    pgoff_t index                      = 0;
+    int ret                            = 0;
 
-    if (*ppos >= sfs_inode->file_size)
+    index = *p_pos >> PAGE_CACHE_SHIFT;
+    p_mapping = p_inode->i_mapping;	//获取inode内存地址映射指针
+
+    if (*p_pos >= p_sfs_inode->file_size)
     {
         /* Read request with offset beyond the filesize */
         return 0;
     }
 
     /*direct I/O operation*/
-    if(filp->f_flags & O_DIRECT)
+    if(p_filp->f_flags & O_DIRECT)
     {
         pr_info("Direct IO start.\n");
-        bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, sfs_inode->data_block_number);
+        p_bh = sb_bread(p_filp->f_path.dentry->d_inode->i_sb, p_sfs_inode->data_block_number);
 
-        if (!bh)
+        if (unlikely(NULL == p_bh))
         {
-            printk(KERN_ERR "Reading the block number [%llu] failed.", sfs_inode->data_block_number);
+            printk(KERN_ERR "Reading the block number [%llu] failed.", p_sfs_inode->data_block_number);
             return 0;
         }
 
-        buffer = (char *)bh->b_data;
-        nbytes = min((size_t) sfs_inode->file_size, len);
+        p_buffer = (char *)p_bh->b_data;
+        nbytes = min((size_t) p_sfs_inode->file_size, len);
 
-        if (copy_to_user(buf, buffer, nbytes))
+        if (copy_to_user(p_buf, p_buffer, nbytes))
         {
-            brelse(bh);
+            brelse(p_bh);
             printk(KERN_ERR "Error copying file contents to the userspace buffer\n");
             return -EFAULT;
         }
 
-        brelse(bh);
+        brelse(p_bh);
     }
     else
     {
         /*I/O operation by page cache*/
         pr_info("Page cache read IO start.\n");
-        if (NULL == mapping)
+        if (unlikely(NULL == p_mapping))
         {
             pr_err("inode->i_mapping is invalid, page cache io opt failed!\n");
             ret = -EFAULT;       
             goto l_out;
         }
 
-        page = find_get_page(mapping, index);
-        if (unlikely(NULL == page))
+        p_page = find_get_page(p_mapping, index);
+        if (unlikely(NULL == p_page))
         {
-            page = page_cache_alloc_cold(mapping);
-            if(!page)
+            p_page = page_cache_alloc_cold(p_mapping);
+            if(!p_page)
             {
                 pr_err("page cache alloc cold failed!");
                 ret = ENOMEM;
                 goto l_out;
             }
 
-            ret = add_to_page_cache_lru(page, mapping, index, GFP_KERNEL);
+            ret = add_to_page_cache_lru(p_page, p_mapping, index, GFP_KERNEL);
     		if (ret)
             {
-                page_cache_release(page);
+                page_cache_release(p_page);
                 if (-EEXIST == ret)
                 {
                     ret = 0;
                 }
                 goto l_out;
             }
-            nbytes = mapping->a_ops->readpage(filp, page);
+            nbytes = p_mapping->a_ops->readpage(p_filp, p_page);
         }
     	else
         {
-            nbytes = inode->i_size;
+            nbytes = p_inode->i_size;
         }
 
-        kaddr = kmap(page);
-        kaddr[nbytes] = '\0';
-        kaddr += *ppos;
-        if(copy_to_user(buf, kaddr, nbytes))
+        p_kaddr = kmap(p_page);
+        p_kaddr[nbytes] = '\0';
+        p_kaddr += *p_pos;
+        if(copy_to_user(p_buf, p_kaddr, nbytes))
         {
     		pr_err("copy data to userspace failed!\n");
     		ret = -EFAULT;
     		goto l_out;
         }
 
-        kunmap(page);
-        unlock_page(page);
-        page_cache_release(page);
+        kunmap(p_page);
+        unlock_page(p_page);
+        page_cache_release(p_page);
     }
 
-    *ppos += nbytes;
+    *p_pos += nbytes;
     ret = nbytes;
-    file_accessed(filp); //why do this?
+    file_accessed(p_filp); //why do this?
 
 l_out:
     return ret;
@@ -580,13 +580,13 @@ l_out:
 }
 
 /* Save the modified inode */
-int simplefs_inode_save(struct super_block *sb, struct simplefs_inode *sfs_inode)
+int simplefs_inode_save(struct super_block *p_sb, struct simplefs_inode *p_sfs_inode)
 {
     struct simplefs_inode *p_sinode = NULL;
     struct buffer_head *p_bh        = NULL;
     int ret                         = 0;
 
-    p_bh = sb_bread(sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+    p_bh = sb_bread(p_sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
     BUG_ON(!p_bh);
 
     if (mutex_lock_interruptible(&simplefs_sb_lock))
@@ -596,10 +596,10 @@ int simplefs_inode_save(struct super_block *sb, struct simplefs_inode *sfs_inode
         goto l_out;
     }
 
-    p_sinode = simplefs_inode_search(sb, (struct simplefs_inode *)p_bh->b_data, sfs_inode);
+    p_sinode = simplefs_inode_search(p_sb, (struct simplefs_inode *)p_bh->b_data, p_sfs_inode);
     if (likely(p_sinode))
     {
-        memcpy(p_sinode, sfs_inode, sizeof(*p_sinode));
+        memcpy(p_sinode, p_sfs_inode, sizeof(*p_sinode));
         printk(KERN_INFO "The inode updated\n");
 
         mark_buffer_dirty(p_bh);
@@ -625,77 +625,77 @@ l_out:
 
 /* FIXME: The write support is rudimentary. I have not figured out a way to do writes
  * from particular offsets (even though I have written some untested code for this below) efficiently. */
-ssize_t simplefs_write(struct file * filp, const char __user * buf, size_t len, loff_t * ppos)
+ssize_t simplefs_write(struct file *p_filp, const char __user *p_buf, size_t len, loff_t *p_pos)
 {
     /* After the commit dd37978c5 in the upstream linux kernel,
      * we can use just filp->f_inode instead of the
      * f->f_path.dentry->d_inode redirection */
-    struct inode *inode              = NULL;
-    struct simplefs_inode *sfs_inode = NULL;
-    struct buffer_head *bh           = NULL;
-    struct super_block *sb           = NULL;
-    char *buffer                     = NULL;
-    int retval                       = 0;
-    struct address_space *mapping    = NULL;
-    char *kaddr                      = NULL;
-    pgoff_t index                    = 0;
-    struct page *page                = NULL;
-    int ret                          = 0;
+    struct inode *p_inode              = NULL;
+    struct simplefs_inode *p_sfs_inode = NULL;
+    struct buffer_head *p_bh           = NULL;
+    struct super_block *p_sb           = NULL;
+    char *p_buffer                     = NULL;
+    struct address_space *p_mapping    = NULL;
+    char *p_kaddr                      = NULL;
+    struct page *p_page                = NULL;
+    pgoff_t index                      = 0;
+    int retval                         = 0;
+    int ret                            = 0;
 
-    inode  = filp->f_inode;
-    mapping = inode->i_mapping;
-    index = (*ppos) >> PAGE_CACHE_SHIFT;
+    p_inode  = p_filp->f_inode;
+    p_mapping = p_inode->i_mapping;
+    index = (*p_pos) >> PAGE_CACHE_SHIFT;
 
-    retval = generic_write_checks(filp, ppos, &len, 0);
+    retval = generic_write_checks(p_filp, p_pos, &len, 0);
     if (retval)
     {
         return retval;
     }
 
-    sfs_inode = SIMPLEFS_INODE(inode);
-    sb = inode->i_sb;
+    p_sfs_inode = SIMPLEFS_INODE(p_inode);
+    p_sb = p_inode->i_sb;
 
     /*Direct I/O*/
-    if (filp->f_flags & O_DIRECT)
+    if (p_filp->f_flags & O_DIRECT)
     {
         pr_info("Direct IO start.\n");
-        inode = filp->f_path.dentry->d_inode;
-        bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, sfs_inode->data_block_number);
+        p_inode = p_filp->f_path.dentry->d_inode;
+        p_bh = sb_bread(p_filp->f_path.dentry->d_inode->i_sb, p_sfs_inode->data_block_number);
 
-    	if (!bh)
+    	if (unlikely(NULL == p_bh))
         {
-    	    printk(KERN_ERR "Reading the block number [%llu] failed.", sfs_inode->data_block_number);
+    	    printk(KERN_ERR "Reading the block number [%llu] failed.", p_sfs_inode->data_block_number);
             return 0;
         }
-        buffer = (char *)bh->b_data;
+        p_buffer = (char *)p_bh->b_data;
 
         /* Move the pointer until the required byte offset */
-        buffer += *ppos;
+        p_buffer += *p_pos;
 
-        if (copy_from_user(buffer, buf, len))
+        if (copy_from_user(p_buffer, p_buf, len))
         {
-            brelse(bh);
+            brelse(p_bh);
             printk(KERN_ERR "Error copying file contents from the userspace buffer to the kernel space\n");
             return -EFAULT;
         }
         //*ppos += len;
 
-        mark_buffer_dirty(bh);
-        sync_dirty_buffer(bh);
-        brelse(bh);
+        mark_buffer_dirty(p_bh);
+        sync_dirty_buffer(p_bh);
+        brelse(p_bh);
     }
     else
     {
         /*I/O operation by page cache*/		
         pr_info("Page cache write IO start.\n");
-        if (NULL == mapping)
+        if (unlikely(NULL == p_mapping))
 	    {
             pr_err("inode->i_mapping is invalid, page cache io opt failed!\n");
             ret = -EFAULT;       
             goto l_out;
         }
-        page = grab_cache_page_write_begin(mapping, index, 0);
-        if(!page)
+        p_page = grab_cache_page_write_begin(p_mapping, index, 0);
+        if(unlikely(NULL == p_page))
         {
             pr_err("grab cache page write failed!");
             ret = -ENOMEM;
@@ -706,30 +706,30 @@ ssize_t simplefs_write(struct file * filp, const char __user * buf, size_t len, 
             pr_info("grab cache page write ok!");
         }
 
-        kaddr = kmap(page);
-        kaddr += *ppos;
-        if(copy_from_user(kaddr, buf, len))
+        p_kaddr = kmap(p_page);
+        p_kaddr += *p_pos;
+        if(copy_from_user(p_kaddr, p_buf, len))
         {
             pr_err("copy data from userspace failed!");
             ret = -EFAULT;
             goto l_out;
         }
-        kunmap(page);
+        kunmap(p_page);
 
         //wht do this ?
-        if (!PageUptodate(page))
+        if (!PageUptodate(p_page))
         {
-            SetPageUptodate(page);
+            SetPageUptodate(p_page);
         }
 
-        set_page_dirty(page);
+        set_page_dirty(p_page);
 
-        unlock_page(page);
-        page_cache_release(page);
+        unlock_page(p_page);
+        page_cache_release(p_page);
     }
 
-    *ppos += len;
-    inode->i_size = *ppos;
+    *p_pos += len;
+    p_inode->i_size = *p_pos;
     /* Set new size
      * sfs_inode->file_size = max(sfs_inode->file_size, *ppos);
      *
@@ -739,11 +739,12 @@ ssize_t simplefs_write(struct file * filp, const char __user * buf, size_t len, 
     if (mutex_lock_interruptible(&simplefs_inodes_mgmt_lock))
     {
         sfs_trace("Failed to acquire mutex lock\n");
-        return -EINTR;
+        len = -EINTR;
+        goto l_out;
     }
 
-    sfs_inode->file_size = *ppos;
-    retval = simplefs_inode_save(sb, sfs_inode);
+    p_sfs_inode->file_size = *p_pos;
+    retval = simplefs_inode_save(p_sb, p_sfs_inode);
     if (retval)
     {
         len = retval;
@@ -755,22 +756,22 @@ l_out:
     return len;
 }
 
-int simplefs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+int simplefs_fsync(struct file *p_file, loff_t start, loff_t end, int datasync)
 {
-    struct inode *inode              = file->f_inode;
-    struct super_block *sb           = inode->i_sb;
-    struct address_space *mapping    = inode->i_mapping;
-    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(inode);
-    struct buffer_head *bh           = NULL;
-    struct page *page                = NULL;
-    pgoff_t index                    = start >> PAGE_CACHE_SHIFT;
-    char *buffer                     = NULL;
-    char *kaddr                      = NULL;
+    struct inode *p_inode              = p_file->f_inode;
+    struct super_block *p_sb           = p_inode->i_sb;
+    struct address_space *p_mapping    = p_inode->i_mapping;
+    struct simplefs_inode *p_sfs_inode = SIMPLEFS_INODE(p_inode);
+    struct buffer_head *p_bh           = NULL;
+    struct page *p_page                = NULL;
+    pgoff_t index                      = start >> PAGE_CACHE_SHIFT;
+    char *p_buffer                     = NULL;
+    char *p_kaddr                      = NULL;
 
     printk("this is %s\n", __func__);
     		   
-    page = find_get_page(mapping, index);
-    if (page)
+    p_page = find_get_page(p_mapping, index);
+    if (p_page)
     {
         printk("cache page for write get ok!\n");
     }
@@ -780,21 +781,22 @@ int simplefs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
         return 0;
     }
     		   
-    kaddr = kmap(page);
-    bh = sb_bread(sb, sfs_inode->data_block_number);
-    if (!bh)
+    p_kaddr = kmap(p_page);
+    p_bh = sb_bread(p_sb, p_sfs_inode->data_block_number);
+    if (unlikely(NULL == p_bh))
     {
-        printk(KERN_ERR "Reading the block number [%llu] failed.", sfs_inode->data_block_number);
+        printk(KERN_ERR "Reading the block number [%llu] failed.", p_sfs_inode->data_block_number);
         return 0;
     }
-    buffer = (char *)bh->b_data;
-    memcpy(buffer, kaddr, inode->i_size);
-    kunmap(page);
-    page_cache_release(page);
 
-    mark_buffer_dirty(bh);
-    sync_dirty_buffer(bh);
-    brelse(bh);
+    p_buffer = (char *)p_bh->b_data;
+    memcpy(p_buffer, p_kaddr, p_inode->i_size);
+    kunmap(p_page);
+    page_cache_release(p_page);
+
+    mark_buffer_dirty(p_bh);
+    sync_dirty_buffer(p_bh);
+    brelse(p_bh);
     				   
     return 0;
 }
@@ -818,58 +820,57 @@ const struct file_operations simplefs_dir_operations =
 #endif
 };
 
-int simplefs_get_block(struct inode *inode, sector_t iblock, struct buffer_head *bh_result, int create)
+int simplefs_get_block(struct inode *p_inode, sector_t iblock, struct buffer_head *p_bh_result, int create)
 {
-    struct super_block *sb           = inode->i_sb;
-    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(inode);
+    struct super_block *p_sb           = p_inode->i_sb;
+    struct simplefs_inode *p_sfs_inode = SIMPLEFS_INODE(p_inode);
 
     if(create)
     {
-        set_buffer_new(bh_result);
+        set_buffer_new(p_bh_result);
     }
-    map_bh(bh_result, sb, sfs_inode->data_block_number);
+    map_bh(p_bh_result, p_sb, p_sfs_inode->data_block_number);
+
     return 0;
 }
 
-static int simplefs_readpage(struct file *file, struct page *page)
+static int simplefs_readpage(struct file *p_file, struct page *p_page)
 {
-    return mpage_readpage(page, simplefs_get_block);	
+    return mpage_readpage(p_page, simplefs_get_block);	
 }
 
-static int simplefs_readpages(struct file *file, struct address_space *mapping, struct list_head *pages, unsigned nr_pages)
+static int simplefs_readpages(struct file *p_file, struct address_space *p_mapping, struct list_head *p_pages, unsigned nr_pages)
 {
-    return mpage_readpages(mapping, pages, nr_pages, simplefs_get_block);
+    return mpage_readpages(p_mapping, p_pages, nr_pages, simplefs_get_block);
 }
 
-static int simplefs_writepage(struct page *page, struct writeback_control *wbc)
+static int simplefs_writepage(struct page *p_page, struct writeback_control *p_wbc)
 {
-    return block_write_full_page(page, simplefs_get_block, wbc);
+    return block_write_full_page(p_page, simplefs_get_block, p_wbc);
 }
 
-static int simplefs_writepages(struct address_space *mapping, struct writeback_control *wbc)
+static int simplefs_writepages(struct address_space *p_mapping, struct writeback_control *p_wbc)
 {
-    return mpage_writepages(mapping, wbc, simplefs_get_block);
+    return mpage_writepages(p_mapping, p_wbc, simplefs_get_block);
 }
 
-static int simplefs_write_begin(struct file *file, struct address_space *mapping,
-    	loff_t pos, unsigned len, unsigned flags,
-    	struct page **pagep, void **fsdata)
+static int simplefs_write_begin(struct file *p_file, struct address_space *p_mapping,
+    loff_t pos, unsigned len, unsigned flags, struct page **pp_pagep, void **pp_fsdata)
 {
- 	return block_write_begin(mapping, pos, len, flags, pagep, simplefs_get_block);
+ 	return block_write_begin(p_mapping, pos, len, flags, pp_pagep, simplefs_get_block);
 }
 
-static int simplefs_write_end(struct file *file, struct address_space *mapping,
-    		loff_t pos, unsigned len, unsigned copied,
-    		struct page *page, void *fsdata)
+static int simplefs_write_end(struct file *p_file, struct address_space *p_mapping,
+    loff_t pos, unsigned len, unsigned copied, struct page *p_page, void *p_fsdata)
 {
-    return generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+    return generic_write_end(p_file, p_mapping, pos, len, copied, p_page, p_fsdata);
 }
 
-static ssize_t simplefs_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov, loff_t offset, unsigned long nr_segs)
+static ssize_t simplefs_direct_IO(int rw, struct kiocb *p_iocb, const struct iovec *p_iov, loff_t offset, unsigned long nr_segs)
 {
-    struct file *file = iocb->ki_filp;
+    struct file *file = p_iocb->ki_filp;
     struct inode *inode = file->f_mapping->host;				
-    return blockdev_direct_IO(rw, iocb, inode, iov,offset, nr_segs, simplefs_get_block);
+    return blockdev_direct_IO(rw, p_iocb, inode, p_iov, offset, nr_segs, simplefs_get_block);
 }
     		
 const struct address_space_operations simplefs_aops =
@@ -883,19 +884,19 @@ const struct address_space_operations simplefs_aops =
     .direct_IO    = simplefs_direct_IO,
 };
 
-static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
+static int simplefs_create(struct inode *p_dir, struct dentry *p_dentry, umode_t mode, bool excl);
 
-struct dentry *simplefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags);
+struct dentry *simplefs_lookup(struct inode *p_parent_inode, struct dentry *p_dentry, unsigned int flags);
 
-static int simplefs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
+static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry, umode_t mode);
 
 static int simplefs_rmdir(struct inode *p_parent_inode, struct dentry *p_dentry);
 
-static int simplefs_unlink(struct inode *dir, struct dentry *dentry);
+static int simplefs_unlink(struct inode *p_parent_inode, struct dentry *p_dentry);
 
-static int simplefs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry);
+static int simplefs_link(struct dentry *p_old_dentry, struct inode *p_dir, struct dentry *p_dentry);
 
-static int simplefs_symlink(struct inode * dir, struct dentry * dentry, const char * symname);
+static int simplefs_symlink(struct inode *p_dir, struct dentry *p_dentry, const char *p_symname);
 
 // 对于simplefs inode实现的op语义操作函数
 static struct inode_operations simplefs_inode_ops =
@@ -1054,10 +1055,10 @@ l_out:
     return ret;
 }
 
-void simplefs_inode_hardlink_cn_add(struct super_block *sb, struct simplefs_inode *sfs_inode)
+void simplefs_inode_hardlink_cn_add(struct super_block *p_sb, struct simplefs_inode *p_sfs_inode)
 {
-    struct buffer_head *bh                = NULL;
-    struct simplefs_inode *inode_iterator = NULL;
+    struct buffer_head *p_bh                = NULL;
+    struct simplefs_inode *p_inode_iterator = NULL;
     
     __PRINT_FUNC_INFO();
 
@@ -1067,8 +1068,8 @@ void simplefs_inode_hardlink_cn_add(struct super_block *sb, struct simplefs_inod
     	return;
     }
     
-    bh = sb_bread(sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
-    BUG_ON(!bh);
+    p_bh = sb_bread(p_sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+    BUG_ON(!p_bh);
     	
     if (mutex_lock_interruptible(&simplefs_sb_lock))
     {
@@ -1076,19 +1077,19 @@ void simplefs_inode_hardlink_cn_add(struct super_block *sb, struct simplefs_inod
         goto l_out_mgmt;
     }
     
-    inode_iterator = simplefs_inode_search(sb, (struct simplefs_inode*)bh->b_data, sfs_inode);	
-    if(NULL == inode_iterator)
+    p_inode_iterator = simplefs_inode_search(p_sb, (struct simplefs_inode*)p_bh->b_data, p_sfs_inode);	
+    if(unlikely(NULL == p_inode_iterator))
     {
     	pr_info("simplefs_inode_search failed!!!");
     	goto l_out_bh;
     }
 
-    inode_iterator->link_counter++;
+    p_inode_iterator->link_counter++;
 
 l_out_bh:
-    mark_buffer_dirty(bh);
-    simplefs_sb_sync(sb);
-    brelse(bh);
+    mark_buffer_dirty(p_bh);
+    simplefs_sb_sync(p_sb);
+    brelse(p_bh);
     mutex_unlock(&simplefs_sb_lock);
     
 l_out_mgmt:
@@ -1382,23 +1383,23 @@ l_out:
 *	  作者:houchao
 *	  说明:函数优化,增加注释信息
 */
-static int simplefs_hardlink_fs_object(struct dentry *old_dentry, struct inode *dir,
-    		 struct dentry *dentry)
+static int simplefs_hardlink_fs_object(struct dentry *p_old_dentry, struct inode *p_dir,
+    struct dentry *p_dentry)
 {
     int ret                          = 0;
-    struct super_block *sb           = dir->i_sb; 
-    struct inode *inode              = d_inode(old_dentry);
-    //通过old_dentry获取sfs_inode
-    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(inode);	
+    struct super_block *sb           = p_dir->i_sb; 
+    struct inode *inode              = d_inode(p_old_dentry);
+    struct simplefs_inode *sfs_inode = SIMPLEFS_INODE(inode);  //通过old_dentry获取sfs_inode
 
-    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock)) {
-    	sfs_trace("Failed to acquire mutex lock\n");
-    	ret = -EINTR;
-    	goto l_out;
-    }	
+    if (mutex_lock_interruptible(&simplefs_directory_children_update_lock))
+    {
+        sfs_trace("Failed to acquire mutex lock\n");
+        ret = -EINTR;
+        goto l_out;
+    }
 
     //在父dir中添加一个条目信息
-    ret = simplefs_dir_add_entry_info(dir, sfs_inode, dentry->d_name.name);
+    ret = simplefs_dir_add_entry_info(p_dir, sfs_inode, p_dentry->d_name.name);
     if(ret)
     {
         pr_info("simplefs dir add inode failed!\n");
@@ -1427,8 +1428,8 @@ l_out:
 *	  作者:houchao
 *	  说明:函数优化,增加注释信息
 */
-static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dentry *p_dentry,
-    const char * symname)
+static int simplefs_symlink_fs_object(struct inode *p_parent_inode, struct dentry *p_dentry,
+    const char *p_symname)
 {
     struct inode *p_inode              = NULL;
     struct simplefs_inode *p_sfs_inode = NULL;
@@ -1461,10 +1462,10 @@ static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dent
     if (unlikely(count >= SIMPLEFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED))
     {
         /* The above condition can be just == insted of the >= */
-    	printk(KERN_ERR
-    	       "Maximum number of objects supported by simplefs is already reached");
+    	printk(KERN_ERR "Maximum number of objects supported by simplefs is already reached");
         mutex_unlock(&simplefs_directory_children_update_lock);
-        return -ENOSPC;
+        ret = -ENOSPC;
+        goto l_out;
     }
 
     printk("simplefs_symlink_fs_object new inode.\n");
@@ -1527,8 +1528,8 @@ static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dent
     p_bh = sb_bread(p_sb, p_sfs_inode->data_block_number);
     BUG_ON(!p_bh);
     p_buff = (char *)p_bh->b_data;
-    len = strlen(symname)+1;
-    memcpy(p_buff, symname, len);
+    len = strlen(p_symname)+1;
+    memcpy(p_buff, p_symname, len);
     
     mark_buffer_dirty(p_bh);
     sync_dirty_buffer(p_bh);
@@ -1547,7 +1548,8 @@ static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dent
     if(unlikely(ret))
     {
         pr_info("simplefs dir add inode failed!\n");
-        return ret;
+        mutex_unlock(&simplefs_directory_children_update_lock);
+        goto l_out;
     }
 
     mutex_unlock(&simplefs_directory_children_update_lock);
@@ -1558,6 +1560,7 @@ static int simplefs_symlink_fs_object(struct inode * p_parent_inode, struct dent
 
 l_out:
     return ret;
+
 }
 
 /*函数说明:文件系统创建目录文件
@@ -1571,8 +1574,7 @@ l_out:
 *     作者:houchao
 *     说明:函数优化,增加注释信息
 */
-static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry,
-    		  umode_t mode)
+static int simplefs_mkdir(struct inode *p_parent_inode, struct dentry *p_dentry, umode_t mode)
 {
     __PRINT_FUNC_INFO();
     /* I believe this is a bug in the kernel, for some reason, the mkdir callback
@@ -1634,18 +1636,18 @@ static int simplefs_unlink(struct inode *p_parent_inode, struct dentry *p_dentry
     return simplefs_delete_fs_object(p_parent_inode, p_dentry);
 }
 
-static int simplefs_link(struct dentry *old_dentry, struct inode *dir,
-    		 struct dentry *dentry)
+static int simplefs_link(struct dentry *p_old_dentry, struct inode *p_dir,
+    		 struct dentry *p_dentry)
 {
     __PRINT_FUNC_INFO();
-    return simplefs_hardlink_fs_object(old_dentry, dir, dentry);
+    return simplefs_hardlink_fs_object(p_old_dentry, p_dir, p_dentry);
 }
 
-static int simplefs_symlink(struct inode * dir, struct dentry * dentry,
-    						  const char * symname)
+static int simplefs_symlink(struct inode *p_dir, struct dentry *p_dentry,
+    						  const char *p_symname)
 {
     __PRINT_FUNC_INFO();
-    return simplefs_symlink_fs_object(dir, dentry, symname);
+    return simplefs_symlink_fs_object(p_dir, p_dentry, p_symname);
 }
 
 /*函数说明:遍历指定的目录
@@ -1813,7 +1815,8 @@ l_out:
 /*
 * 结构体说明: 文件系统sb元数据操作函数集合
 */
-static const struct super_operations simplefs_sops = {
+static const struct super_operations simplefs_sops =
+{
     .destroy_inode = simplefs_destory_inode,
     .statfs = simplefs_statfs,
 };
@@ -1959,7 +1962,8 @@ static void simplefs_kill_superblock(struct super_block *p_sb)
 /*
 * 注册内核文件系统类型结构体
 */
-struct file_system_type simplefs_fs_type = {
+struct file_system_type simplefs_fs_type =
+{
     .owner = THIS_MODULE,
     .name = "simplefs",
     .mount = simplefs_mount,

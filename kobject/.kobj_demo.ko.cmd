@@ -1,1 +1,0 @@
-cmd_/source_code/Storage_filesystem/kobject/kobj_demo.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /source_code/Storage_filesystem/kobject/kobj_demo.ko /source_code/Storage_filesystem/kobject/kobj_demo.o /source_code/Storage_filesystem/kobject/kobj_demo.mod.o
